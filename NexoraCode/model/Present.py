@@ -402,10 +402,50 @@ def _present_entries(entries: list, detail: dict) -> str:
         size_text = f" ({size} B)" if isinstance(size, (int, float)) else ""
         lines.append(f"[dir]  {name}" if is_dir else f"- {name}{size_text}")
 
-    if lines:
-        return "\n".join(lines)
+    header = _build_tree_header(detail)
 
-    return _present_empty_entries(detail)
+    if lines:
+        body = "\n".join(lines)
+        return f"{header}\n\n{body}" if header else body
+
+    empty = _present_empty_entries(detail)
+
+    return f"{header}\n\n{empty}" if header else empty
+
+
+def _build_tree_header(detail: dict) -> str:
+    """local_file_search_tree 的 Markdown 标题头（## File Tree + - Field: 值）。
+
+    仅在该工具的结果结构上生成：entry_count / scanned_entries 是它独有的字段，
+    local_file_list 只有 count，不会误命中，保持其原有纯列表输出不变。
+    """
+    entry_count = detail.get("entry_count")
+    scanned = detail.get("scanned_entries")
+
+    if not isinstance(entry_count, int) and not isinstance(scanned, int):
+        return ""
+
+    header = ["## File Tree"]
+    path = str(detail.get("path") or "").strip()
+
+    if path:
+        header.append(f"- Path: `{path}`")
+
+    if isinstance(entry_count, int):
+        header.append(f"- Entries: {entry_count}")
+
+    if isinstance(scanned, int):
+        header.append(f"- Scanned: {scanned}")
+
+    pattern = str(detail.get("pattern") or "").strip()
+
+    if pattern and pattern != "*":
+        header.append(f"- Pattern: {pattern}")
+
+    if detail.get("truncated") is True:
+        header.append("- Truncated: yes")
+
+    return "\n".join(header)
 
 
 def _present_empty_entries(detail: dict) -> str:
@@ -544,10 +584,62 @@ def _present_matches(matches: list, detail: dict) -> str:
     query = str(detail.get("query") or "").strip()
     match_count = detail.get("match_count")
 
+    # 结构化标题头：前端 tool-usage 卡片据此提取 Query/Matches/Files 等字段做折叠摘要，
+    # 与 _present_code_scan 的 "## Code Scan Map" 同款做法。
+    header = _build_search_header(detail, query, match_count)
+
     if query and isinstance(match_count, int):
         result = f"query={query} match_count={match_count}\n\n{result}"
 
+    if header:
+        return f"{header}\n\n{result}"
+
     return result
+
+
+def _build_search_header(detail: dict, query: str, match_count: Any) -> str:
+    """搜索类结果的 Markdown 标题头（## Text Search + - Field: 值）。
+
+    `- Field: 值` 行由前端 extractMarkdownField 解析；路径用反引号包裹避免
+    Windows 反斜杠被 Markdown 吃掉，前端 cleanExecutionFlowMarkdownValue 会剥掉反引号。
+    """
+    if not query and not isinstance(match_count, int):
+        return ""
+
+    header = ["## Text Search"]
+
+    if query:
+        header.append(f"- Query: `{query}`")
+
+    scope = str(detail.get("scope") or "").strip()
+
+    if scope:
+        header.append(f"- Scope: {scope}")
+
+    path = str(detail.get("path") or "").strip()
+
+    if path:
+        header.append(f"- Path: `{path}`")
+
+    meta_parts = []
+
+    if isinstance(match_count, int):
+        header.append(f"- Matches: {match_count}")
+
+    scanned = detail.get("scanned_files")
+
+    if isinstance(scanned, int):
+        header.append(f"- Files: {scanned}")
+
+    mode = str(detail.get("mode") or "").strip()
+
+    if mode:
+        header.append(f"- Mode: {mode}")
+
+    if detail.get("truncated") is True:
+        header.append("- Truncated: yes")
+
+    return "\n".join(header)
 
 
 def _present_fields(detail: dict) -> str:

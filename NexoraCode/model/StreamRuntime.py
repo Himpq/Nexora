@@ -84,7 +84,15 @@ _ACCUMULATED_RENDER_CHUNK_TYPES = {
     "puzzle",
     "model_info",
     "token_usage",
+    "queue_turn_start",
+    "queue_turn_end",
 }
+_CANCEL_ALLOWED_CHUNK_TYPES = frozenset({
+    "queue_state",
+    "queue_guide_rollback",
+    "queue_turn_start",
+    "queue_turn_end",
+})
 
 
 class StreamCancelled(RuntimeError):
@@ -166,14 +174,14 @@ def _append_chunk_to_session(session: Dict[str, Any], payload: Dict[str, Any]) -
     if chunk_type:
         session["last_chunk_type"] = chunk_type
 
+    if chunk_type in {"stream_session", "queue_turn_start"} and "assistant_index" in payload:
+        session["assistant_index"] = payload.get("assistant_index")
+
     if chunk_type == "stream_session":
         payload["stream_id"] = str(payload.get("stream_id") or session.get("stream_id") or "")
 
         if not cid:
             payload["conversation_id"] = str(session.get("conversation_id") or "")
-
-        if "assistant_index" in payload:
-            session["assistant_index"] = payload.get("assistant_index")
 
         if "regenerate_index" in payload:
             session["regenerate_index"] = payload.get("regenerate_index")
@@ -344,7 +352,7 @@ def start_session(
         cond = session["cond"]
 
         with cond:
-            if bool(session.get("cancel_requested", False)):
+            if bool(session.get("cancel_requested", False)) and chunk_type not in _CANCEL_ALLOWED_CHUNK_TYPES:
                 raise StreamCancelled(_CANCEL_SENTINEL)
 
             _append_chunk_to_session(session, payload)
@@ -505,7 +513,10 @@ def get_accumulated_content(stream_id: str) -> Optional[Dict[str, Any]]:
     for chunk in chunks:
         ctype = str(chunk.get("type") or "").strip()
 
-        if ctype == "content":
+        if ctype == "queue_turn_start":
+            content_parts.clear()
+            reasoning_parts.clear()
+        elif ctype == "content":
             content_parts.append(str(chunk.get("content") or ""))
         elif ctype == "reasoning_content":
             reasoning_parts.append(str(chunk.get("content") or ""))

@@ -10,6 +10,7 @@ import uuid
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 from core.config import get_app_root
 from .ConversationStore import ConversationStore, write_json_atomic
+from .MessageQueue import MessageQueue
 from .StreamRuntime import (
     get_session_meta,
     list_sessions,
@@ -103,14 +104,32 @@ def start_task(body):
             raise ValueError("当前会话已有运行任务，请先等待或停止")
 
         sid = uuid.uuid4().hex
-        worker = _WORKER_FACTORY(body)
+        worker_body = dict(body)
+        worker_body["_stream_id"] = sid
+        worker = _WORKER_FACTORY(worker_body)
         record = {"stream_id": sid, "conversation_id": cid, "digest": digest}
         path.parent.mkdir(parents=True, exist_ok=True)
         write_json_atomic(path, record)
         metadata = dict(body)
         conversation = ConversationStore().get(cid) if cid else None
         metadata["history_user_count"] = sum(message.get("role") == "user" for message in conversation["messages"]) if conversation else 0
-        start_session(conversation_id=cid, worker=worker, metadata=metadata, stream_id=sid)
+        if cid:
+            active_ids = {
+                str(row.get("stream_id") or "")
+                for row in list_sessions(conversation_ids=[cid])
+                if row.get("status") in {"running", "cancelling"}
+            }
+            queue_store = MessageQueue()
+            committed_item_ids = queue_store.committed_item_ids_from_history(conversation)
+            queue_store.reconcile(cid, active_ids, committed_item_ids=committed_item_ids)
+
+        try:
+            start_session(conversation_id=cid, worker=worker, metadata=metadata, stream_id=sid)
+        except Exception:
+            if cid:
+                MessageQueue().pause(cid)
+            raise
+
         return record
 
 

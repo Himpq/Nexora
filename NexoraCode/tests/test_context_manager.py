@@ -27,9 +27,17 @@ class ContextTests(unittest.TestCase):
         sys.modules["test_model"] = package
         core = types.ModuleType("core.config")
         core.get_app_root = lambda: Path(self.temp.name)
+        core.get_bundle_root = lambda: Path(self.temp.name) / "bundle"
         core.config = {}
         self.runtime_config = core.config
         sys.modules["core.config"] = core
+        local = types.ModuleType("local")
+        local.build_default_executor = lambda *args, **kwargs: None
+        local.ToolExecutor = type("ToolExecutor", (), {})
+        path_guard = types.ModuleType("local.PathGuard")
+        path_guard.grant_temporary_permission = lambda *args, **kwargs: None
+        sys.modules["local"] = local
+        sys.modules["local.PathGuard"] = path_guard
         self.provider_module = module("test_model.Provider", ROOT / "model/Provider.py")
         self.store_module = module("test_model.ConversationStore", ROOT / "model/ConversationStore.py")
         self.context_module = module("test_model.ContextManager", ROOT / "model/ContextManager.py")

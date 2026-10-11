@@ -159,6 +159,33 @@ class InjectionTests(unittest.TestCase):
             {"kind": "added", "text": "第二行"},
         ])
 
+    def test_merged_response_keeps_latest_injection_snapshot_once(self):
+        """同一次响应的多轮历史只保留一张注入卡，并显示最新快照。"""
+
+        earlier = {
+            "type": "context_injection",
+            "blocks": [{"name": "project_conventions", "mode": "diff"}],
+        }
+        latest = {
+            "type": "context_injection",
+            "blocks": [{"name": "project_conventions", "mode": "full"}],
+        }
+        steps = [
+            earlier,
+            {"type": "function_call", "name": "read_file"},
+            latest,
+            {"type": "function_result", "name": "read_file"},
+        ]
+
+        collapsed = self.ti.collapse_context_injection_steps(steps)
+
+        self.assertEqual([step["type"] for step in collapsed], [
+            "context_injection",
+            "function_call",
+            "function_result",
+        ])
+        self.assertIs(collapsed[0], latest)
+
 
 if __name__ == "__main__":
     unittest.main()

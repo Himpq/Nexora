@@ -249,3 +249,31 @@ def plan_injection(
             })
 
     return blocks, new_baseline, diagnostics
+
+
+def collapse_context_injection_steps(steps: List[Any]) -> List[Any]:
+    """Keep the latest injection snapshot at the first event position."""
+    collapsed: List[Any] = []
+    injection_index = None
+    latest_injection = None
+
+    for step in steps:
+        is_injection = (
+            isinstance(step, dict)
+            and str(step.get("type") or "").strip() == "context_injection"
+        )
+
+        if is_injection:
+            if injection_index is None:
+                injection_index = len(collapsed)
+
+            latest_injection = step
+
+            continue
+
+        collapsed.append(step)
+
+    if injection_index is not None and latest_injection is not None:
+        collapsed.insert(injection_index, latest_injection)
+
+    return collapsed

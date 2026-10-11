@@ -253,7 +253,7 @@ class AgentLoop:
         self.store = store
         self.context_manager = ContextManager(provider, store)
 
-    def stream_send(self, conversation_id: str, user_text: str, system_prompt: str = "", cancel_checker: Any = None, force_context_compression: bool = False, injection_sources: Any = None, skip_user_message: bool = False, enable_thinking: bool | None = None) -> Generator[dict, None, None]:
+    def stream_send(self, conversation_id: str, user_text: str, system_prompt: str = "", cancel_checker: Any = None, force_context_compression: bool = False, injection_sources: Any = None, skip_user_message: bool = False, enable_thinking: bool | None = None, queue_item_id: str = "", should_yield_for_guidance: Any = None) -> Generator[dict, None, None]:
         conversation = self.store.get(conversation_id) if conversation_id else None
 
         if conversation is None:
@@ -287,7 +287,23 @@ class AgentLoop:
         title_before_append = str(conversation.get("title") or "")
 
         if not skip_user_message:
-            self.store.append_message(conversation_id, {"role": "user", "content": user_text, "timestamp": _now()})
+            if queue_item_id and self._is_cancelled(cancel_checker):
+                yield {"type": "queue_cancelled", "conversation_id": conversation_id}
+                return
+
+            user_message = {"role": "user", "content": user_text, "timestamp": _now()}
+
+            if queue_item_id:
+                user_message["queue_item_id"] = str(queue_item_id)
+
+            self.store.append_message(conversation_id, user_message)
+
+            if queue_item_id:
+                yield {
+                    "type": "queue_user_committed",
+                    "conversation_id": conversation_id,
+                    "item_id": str(queue_item_id),
+                }
 
             if is_placeholder_title(title_before_append):
                 maybe_generate_title(conversation_id, user_text, title_before_append)
@@ -1017,7 +1033,15 @@ class AgentLoop:
 
             if permission_blocked:
                 print(f"[LocalAgent] stream stopped awaiting permission: conversation_id={conversation_id}")
-                yield {"type": "done", "conversation_id": conversation_id}
+                yield {"type": "done", "conversation_id": conversation_id, "awaiting_permission": True}
+
+                break
+
+            if callable(should_yield_for_guidance) and should_yield_for_guidance():
+                yield {
+                    "type": "queue_guidance_checkpoint",
+                    "conversation_id": conversation_id,
+                }
 
                 break
 

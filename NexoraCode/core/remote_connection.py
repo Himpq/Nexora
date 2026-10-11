@@ -38,8 +38,34 @@ def normalize_server_url(value):
 def allowed_request(method, path):
     """不转发任意 URL、设置、密钥、代理及原始工具执行接口。"""
     rules = {
-        "GET": [r"/api/config", r"/api/conversations", r"/api/conversations/conv_[a-f0-9]{10}(?:/messages|/turns|/settings)?", r"/api/local/tasks", r"/api/local/tasks/[a-f0-9]{32}/events", r"/api/local/permissions"],
-        "POST": [r"/api/conversations", r"/api/conversations/conv_[a-f0-9]{10}/settings", r"/api/local/tasks", r"/api/local/tasks/[a-f0-9]{32}/cancel", r"/api/agent/permission/grant", r"/api/agent/tool-permission/resolve", r"/api/local/permissions"],
+        "GET": [
+            r"/api/config",
+            r"/api/conversations",
+            r"/api/conversations/conv_[a-f0-9]{10}(?:/messages|/turns|/settings)?",
+            r"/api/local/tasks",
+            r"/api/local/tasks/[a-f0-9]{32}/events",
+            r"/api/local/permissions",
+            # 消息队列:云端 RemoteControl 查看/操作电脑端队列
+            r"/api/chat/queue",
+        ],
+        "POST": [
+            r"/api/conversations",
+            r"/api/conversations/conv_[a-f0-9]{10}/settings",
+            r"/api/local/tasks",
+            r"/api/local/tasks/[a-f0-9]{32}/cancel",
+            r"/api/agent/permission/grant",
+            r"/api/agent/tool-permission/resolve",
+            r"/api/local/permissions",
+            # 消息队列:入队与引导
+            r"/api/chat/queue",
+            r"/api/chat/queue/[A-Za-z0-9_-]{1,64}/steer",
+        ],
+        "PATCH": [
+            r"/api/chat/queue/[A-Za-z0-9_-]{1,64}",
+        ],
+        "DELETE": [
+            r"/api/chat/queue/[A-Za-z0-9_-]{1,64}",
+        ],
     }
     return any(re.fullmatch(pattern, path) for pattern in rules.get(method, []))
 
@@ -171,8 +197,16 @@ class RemoteConnection:
                     return {"status": 403, "body": {"message": "请先在电脑登记该项目"}}
 
         with self.app.test_client() as client:
-            response = client.open(path, method=method, json=payload.get("body") if method == "POST" else None,
-                                   query_string=payload.get("query") if method == "GET" else None)
+            # query 对所有方法都生效:队列接口把 conversation_id 放在 query,
+            # 而 PATCH/DELETE/POST 同样需要它。body 按方法选择 json 或空。
+            request_kwargs = {
+                "query_string": payload.get("query") if payload.get("query") else None,
+            }
+
+            if method in {"POST", "PATCH", "PUT"}:
+                request_kwargs["json"] = payload.get("body")
+
+            response = client.open(path, method=method, **request_kwargs)
             result = response.get_json()
 
             if result is None:

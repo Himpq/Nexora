@@ -48,7 +48,7 @@ from .ToolPermissionPolicy import (
     save_permission_settings,
     take_pending_tool_action,
 )
-from .turn_injection import plan_injection
+from .turn_injection import collapse_context_injection_steps, plan_injection
 
 
 _local_bp = Blueprint("local_agent", __name__)
@@ -384,7 +384,10 @@ def _merge_agent_response_rounds(messages: list) -> list:
         combined_metadata = {**previous_metadata, **current_metadata}
 
         if combined_steps:
-            combined_metadata["process_steps"] = combined_steps
+            # 同一请求的工具轮都会保存注入快照；历史在首次位置展示最新状态。
+            combined_metadata["process_steps"] = collapse_context_injection_steps(
+                combined_steps
+            )
 
         if previous_reasoning or current_reasoning:
             combined_metadata["reasoning_content"] = previous_reasoning + current_reasoning
@@ -714,58 +717,32 @@ def _stream_worker_factory(body: dict):
         print(f"[LocalAgent] /api/local/tasks provider: (default) model_name={model_name or '(unset)'}")
 
     def _worker(push_chunk, set_conversation_id, set_stage, is_cancel_requested) -> None:
-        from .TitleGenerator import wait_for_title
-
         if not message:
             push_chunk({"type": "error", "message": "消息不能为空"})
 
             return
 
         loop = _build_agent_loop(ProviderClient(target_config) if target_config is not None else None)
-        finished = threading.Event()
-        # 会话 ID 可能由 stream_send 内部新建（body 未带时），用可变容器跟踪实际值。
-        active_conversation_id = [str(conversation_id or "").strip()]
+        from .MessageQueue import MessageQueue
+        from .QueueRunner import run_queue_worker
 
-        def _watch_cancel():
-            while not finished.wait(0.2):
-                if is_cancel_requested():
-                    loop.cancel()
-                    return
-
-        threading.Thread(target=_watch_cancel, daemon=True).start()
-
-        try:
-            for event in loop.stream_send(
-                conversation_id,
-                message,
-                system_prompt=system_prompt,
-                injection_sources=injection_sources,
-                cancel_checker=is_cancel_requested,
-                force_context_compression=body.get("force_context_compression") is True,
-                skip_user_message=body.get("skip_user_message") is True,
-                enable_thinking=enable_thinking,
-            ):
-                event_type = str(event.get("type") or "")
-                print(f"[LocalAgent] sse event: {event_type}")
-
-                if event_type == "conversation_id" and event.get("conversation_id"):
-                    active_conversation_id[0] = str(event.get("conversation_id") or "")
-                    set_conversation_id(active_conversation_id[0])
-
-                push_chunk(_translate_event(event))
-        except Exception as exc:
-            print(f"[LocalAgent] stream error: {exc}")
-            push_chunk({"type": "error", "message": f"本地对话失败: {exc}"})
-            raise
-        finally:
-            finished.set()
-
-        # 标题帧必须赶在流结束前推送：读取端在 status 变为 done 后就会退出。
-        # 超时后不再等待（标题生成慢于回复时放弃即时推送，前端下次拉列表仍会取到新标题）。
-        if active_conversation_id[0]:
-            wait_for_title(active_conversation_id[0], timeout=8.0)
-
-        print("[LocalAgent] worker loop finished")
+        return run_queue_worker(
+            push_chunk=push_chunk,
+            set_conversation_id=set_conversation_id,
+            is_cancel_requested=is_cancel_requested,
+            loop=loop,
+            store=store,
+            queue_store=MessageQueue(),
+            conversation_id=conversation_id,
+            stream_id=str(body.get("_stream_id") or ""),
+            message=message,
+            system_prompt=system_prompt,
+            injection_sources=injection_sources,
+            enable_thinking=enable_thinking,
+            body=body,
+            normalize_messages=_normalize_history_messages,
+            translate_event=_translate_event,
+        )
 
     return _worker
 
@@ -1261,6 +1238,7 @@ def _start_resume_stream(conversation_id: str, conversation: dict, resume_messag
         "conversation_id": conversation_id,
         "model_name": model_name,
         "skip_user_message": True,
+        "queue_resume": True,
         "request_id": uuid.uuid4().hex,
     }
 
@@ -1876,6 +1854,8 @@ def register_local_routes(app, executor=None) -> None:
     set_worker_factory(_stream_worker_factory)
     set_title_listener(_on_title_generated)
     app.register_blueprint(task_bp)
+    from .QueueRoutes import queue_bp
+    app.register_blueprint(queue_bp)
 
 
 def _compression_token_detail(conversation_id: str, index_text: str):

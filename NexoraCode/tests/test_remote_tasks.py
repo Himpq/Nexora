@@ -180,6 +180,75 @@ class RemoteTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_remote_dispatch_enqueues_and_guides_while_waiting_for_permission(self):
+        from flask import Flask
+
+        queue_routes = module("test_model.QueueRoutes", ROOT / "model/QueueRoutes.py")
+        message_queue = module("test_model.MessageQueue", ROOT / "model/MessageQueue.py")
+        sys.modules["model"] = sys.modules["test_model"]
+        sys.modules["model.ConversationStore"] = self.store_module
+        remote = module("isolated_queue_remote_connection", ROOT / "core/remote_connection.py")
+
+        local = Flask("test_local_queue")
+        local.register_blueprint(queue_routes.queue_bp)
+        queue = message_queue.MessageQueue()
+        queue.activate(self.cid, "remote-permission-stream", resume=True)
+        blocked = queue.enqueue(self.cid, "permission-blocked turn")["items"][0]
+        queue.advance(self.cid)
+        queue.wait_for_permission(self.cid, item_id=blocked["id"], item_kind="queued")
+        dispatcher = remote.RemoteConnection(local)
+        query = {"conversation_id": self.cid}
+
+        created = dispatcher.dispatch({
+            "method": "POST",
+            "path": "/api/chat/queue",
+            "query": query,
+            "body": {"message": "queued through remote dispatch"},
+        })
+
+        self.assertEqual(created["status"], 200)
+        self.assertTrue(created["body"]["success"])
+        self.assertEqual(created["body"]["conversation_id"], self.cid)
+        self.assertEqual(
+            [item["message"] for item in created["body"]["items"]],
+            ["queued through remote dispatch"],
+        )
+        queued_id = created["body"]["items"][0]["id"]
+
+        guided = dispatcher.dispatch({
+            "method": "POST",
+            "path": f"/api/chat/queue/{queued_id}/steer",
+            "query": query,
+        })
+
+        self.assertEqual(guided["status"], 200)
+        self.assertTrue(guided["body"]["success"])
+        self.assertEqual(guided["body"]["pending_guidance"], 1)
+
+        fetched = dispatcher.dispatch({
+            "method": "GET",
+            "path": "/api/chat/queue",
+            "query": query,
+        })
+
+        self.assertEqual(fetched["status"], 200)
+        self.assertTrue(fetched["body"]["success"])
+        self.assertEqual(fetched["body"]["items"], [])
+        self.assertEqual(fetched["body"]["pending_guidance"], 1)
+
+        queue.activate(
+            self.cid,
+            "remote-permission-resume",
+            resume=False,
+            resume_permission=True,
+        )
+        resumed = queue.advance(self.cid)
+        next_guidance = queue.advance(self.cid, completed_item_id=blocked["id"])
+
+        self.assertEqual(resumed["item"]["id"], blocked["id"])
+        self.assertEqual(next_guidance["kind"], "guided")
+        self.assertEqual(next_guidance["item"]["message"], "queued through remote dispatch")
+
     def test_short_command_cancel_terminates_process_tree(self):
         package = types.ModuleType("test_tools")
         package.__path__ = [str(ROOT / "local/tools")]
