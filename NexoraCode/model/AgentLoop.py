@@ -12,6 +12,7 @@ NexoraCode.model.AgentLoop — 本地 Agent Loop
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 import uuid
@@ -31,6 +32,9 @@ from .ToolPermissionPolicy import (
     get_permission_settings,
 )
 from .turn_injection import plan_injection
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 # 会话级已询问过的权限路径记忆（path 归一化），避免授权后模型重试同路径时反复弹卡。
@@ -509,8 +513,8 @@ class AgentLoop:
 
                 force_context_compression = False
                 retry_after_empty_post_tool_response = False
-            except Exception as exc:
-                print(f"[LocalContext] prepare_failed conversation={conversation_id} error={type(exc).__name__}: {exc}")
+            except Exception:
+                _LOGGER.exception("[LocalContext] prepare_failed conversation=%s", conversation_id)
                 raise
 
             # 本轮实际发出的消息条数与整体估算，落盘后作为下一轮占用的实测锚点。
@@ -586,7 +590,7 @@ class AgentLoop:
                         yield retry_record
             except Exception as exc:
                 # 模型流异常：打印完整错误（含 HTTP 状态与响应体），便于定位 4xx/5xx 配置问题。
-                print(f"[LocalAgent] provider stream error: {type(exc).__name__}: {exc}")
+                _LOGGER.exception("[LocalAgent] provider stream error conversation=%s", conversation_id)
 
                 # 模型流异常：若已产出部分内容，落盘为最终消息（带 badge_timing），
                 # 避免异常中断后重进对话缺消息/缺 badge。
@@ -640,9 +644,11 @@ class AgentLoop:
                     try:
                         self.store.save_injection_baseline(conversation_id, injection_baseline)
                         injection_baseline_saved = True
-                    except Exception as exc:
-                        print(f"[LocalAgent] injection_baseline_save_failed conversation={conversation_id} "
-                              f"error={type(exc).__name__}: {exc}")
+                    except Exception:
+                        _LOGGER.exception(
+                            "[LocalAgent] injection_baseline_save_failed conversation=%s",
+                            conversation_id,
+                        )
 
             content_text = "".join(assistant_parts)
             reasoning_text += "".join(assistant_reasoning_parts)

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 
 from .StreamRuntime import StreamCancelled
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def run_queue_worker(
@@ -295,7 +299,7 @@ def run_queue_worker(
         restore_after_stop("cancelled")
         return
     except Exception as exc:
-        print(f"[LocalAgent] stream error: {type(exc).__name__}: {exc}")
+        _LOGGER.exception("[LocalAgent] stream error conversation=%s", active_conversation_id[0])
         if active_conversation_id[0]:
             restore_after_stop("cancelled" if is_cancel_requested() else "error")
 

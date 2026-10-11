@@ -12,6 +12,7 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
 import { registerDesktopRefreshBridge } from '@/bridge/desktopRefresh'
+import { initializeDesktopErrorLogging, reportDesktopError } from '@/bridge/desktopErrorLogging'
 import { initTheme } from '@/ui/theme'
 import { startNexoraCodePerformance } from '@/ui/nexoracodePerformance'
 
@@ -56,6 +57,7 @@ if (import.meta.env.MODE === 'nexoracode') {
     // 暴露桌面端设置保存后的刷新钩子(__ncLoadModels / __ncRefreshToolPermissions),
     // 仅 nexoracode 构建注册,本体网页端不受影响。
     registerDesktopRefreshBridge()
+    initializeDesktopErrorLogging()
 }
 
 // 云端正式包保留 console 错误记录,但不把异常堆栈覆盖在聊天界面。
@@ -89,6 +91,7 @@ if (errorOverlay) {
 function showGlobalError(kind: string, error: unknown): void {
     const stack = error instanceof Error ? (error.stack || error.message) : String(error)
 
+    reportDesktopError(kind, error)
     console.error(`[nexora:${kind}]`, error)
 
     if (!errorOverlay) {

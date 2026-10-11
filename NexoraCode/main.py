@@ -9,12 +9,18 @@ NexoraCode - 本地工具执行器
 """
 
 import json
+import logging
 import os
 import threading
 import time
 import traceback
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+
+from core.error_logging import configure_error_logging, write_frontend_error as _write_frontend_error
+
+configure_error_logging()
+_LOGGER = logging.getLogger(__name__)
 
 import requests
 import webview
@@ -1038,6 +1044,9 @@ class NexoraWindowApi:
             return {"success": True}
         except Exception as e:
             return {"success": False, "message": str(e)}
+
+    def log_frontend_error(self, kind="", message=""):
+        return _write_frontend_error(kind, message)
 
     def escape_iframe_login_loop(self, url=""):
         if not self._window:
@@ -3264,7 +3273,7 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
                 raise Exception("Empty auth response")
             auth_resp = json.loads(auth_msg)
             if auth_resp.get("type") != "auth_ok":
-                print(f"[NexoraCode WSS] Auth failed: {auth_resp}")
+                _LOGGER.error("[NexoraCode WSS] authentication_failed response_type=%s", auth_resp.get("type"))
                 ws.close()
                 time.sleep(5)
                 continue
@@ -3363,7 +3372,7 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
                                 result = registry.execute(tool_name, args, context=task_context)
                                 exec_ms = (time.perf_counter() - exec_started_at) * 1000.0
                             except Exception as e:
-                                print(f"[NexoraCode WSS] Tool Execution Exception: {e}")
+                                _LOGGER.exception("[NexoraCode WSS] tool_execution_failed tool=%s", tool_name)
                                 result = {"error": str(e), "success": False}
                                 exec_ms = 0.0
 
@@ -3384,7 +3393,7 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
                                 })
                                 send_ms = (time.perf_counter() - send_started_at) * 1000.0
                             except Exception as send_error:
-                                print(f"[NexoraCode WSS] Tool Result Send Exception: {send_error}")
+                                _LOGGER.exception("[NexoraCode WSS] tool_result_send_failed task_id=%s", task_id)
                                 send_ms = 0.0
 
                             total_ms = (time.time() - received_at) * 1000.0
@@ -3420,10 +3429,10 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
                 except json.JSONDecodeError:
                     pass
                 except websocket.WebSocketConnectionClosedException:
-                    print("[NexoraCode WSS] Connection closed by server")
+                    _LOGGER.error("[NexoraCode WSS] connection_closed_by_server")
                     break
                 except Exception as loop_e:
-                    print(f"[NexoraCode WSS] Loop Error: {loop_e}")
+                    _LOGGER.exception("[NexoraCode WSS] message_loop_failed")
                     break
 
             ws.close()
@@ -3433,7 +3442,7 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
             # 首次失败仍打印一次便于排查，之后进入退避循环。
             if retry_printed.get("first_failure") is not True:
                 retry_printed["first_failure"] = True
-                print(f"[NexoraCode WSS] Disconnected or error: {e} (will retry with backoff)")
+                _LOGGER.error("[NexoraCode WSS] disconnected; retrying with backoff", exc_info=True)
             time.sleep(backoff_seconds)
             backoff_seconds = min(30.0, backoff_seconds * 2)
             if backoff_seconds >= 30.0:
@@ -3441,7 +3450,7 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
             # 退避达到上限后重置首次失败标记，每 30 秒提示一次连接状态
             if backoff_seconds >= 30.0 and retry_printed.get("last_warn_at", 0) + 30 < time.time():
                 retry_printed["last_warn_at"] = time.time()
-                print(f"[NexoraCode WSS] still disconnected from {base_url}, retrying every 30s")
+                _LOGGER.error("[NexoraCode WSS] still_disconnected; retrying every 30 seconds")
 
 
 def _acquire_single_instance() -> bool:
