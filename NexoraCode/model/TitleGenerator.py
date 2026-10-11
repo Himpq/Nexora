@@ -20,6 +20,7 @@ NexoraCode.model.TitleGenerator — 会话标题自动生成
 from __future__ import annotations
 
 import re
+import logging
 import threading
 import time
 from typing import Optional
@@ -41,6 +42,7 @@ _TITLE_MAX_TOKENS = 48
 # 同一会话只保留一个进行中的生成任务，避免重复请求。
 _INFLIGHT_LOCK = threading.Lock()
 _INFLIGHT: set[str] = set()
+_LOGGER = logging.getLogger(__name__)
 
 # 标题生成完成后的通知回调（由宿主注册，用于把新标题推给前端即时刷新）。
 # 回调在后台线程内同步执行，实现方必须自行保证线程安全与异常隔离。
@@ -66,8 +68,8 @@ def _notify_title_generated(conversation_id: str, title: str) -> None:
 
     try:
         listener(conversation_id, title)
-    except Exception as exc:
-        print(f"[LocalTitle] listener failed conversation={conversation_id} reason={type(exc).__name__}: {exc}")
+    except Exception:
+        _LOGGER.exception("[LocalTitle] listener_failed conversation=%s", conversation_id)
 
 
 _TITLE_SYSTEM_PROMPT = (
@@ -136,9 +138,9 @@ def _run_generation(conversation_id: str, user_text: str) -> None:
         print(f"[LocalTitle] generated conversation={conversation_id} title={title!r}")
 
         _notify_title_generated(conversation_id, title)
-    except Exception as exc:
+    except Exception:
         # 标题是锦上添花：任何失败都静默降级，保留原有截断标题。
-        print(f"[LocalTitle] skipped conversation={conversation_id} reason={type(exc).__name__}: {exc}")
+        _LOGGER.exception("[LocalTitle] generation_failed conversation=%s", conversation_id)
     finally:
         with _INFLIGHT_LOCK:
             _INFLIGHT.discard(conversation_id)

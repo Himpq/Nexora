@@ -16,17 +16,19 @@ from urllib.parse import urlsplit, urlunsplit
 import requests
 from flask import Flask, request, jsonify, Response, stream_with_context, render_template
 
+_LOGGER = logging.getLogger(__name__)
+
 try:
     from flask_sock import Sock as _FlaskSock
 except Exception as _flask_sock_import_error:
     _FlaskSock = None
-    print(f"[NexoraProxy] flask-sock 不可用，WebSocket 转发已禁用: {_flask_sock_import_error}")
+    _LOGGER.exception("[NexoraProxy] flask_sock_unavailable; WebSocket forwarding disabled")
 
 try:
     import websocket as _ws_client_lib
 except Exception as _ws_client_import_error:
     _ws_client_lib = None
-    print(f"[NexoraProxy] websocket-client 不可用，WebSocket 转发已禁用: {_ws_client_import_error}")
+    _LOGGER.exception("[NexoraProxy] websocket_client_unavailable; WebSocket forwarding disabled")
 
 from local import build_default_executor
 from core.config import config, get_app_root, get_bundle_root
@@ -518,20 +520,14 @@ def _proxy_request(path: str):
                                 yield chunk
                     except Exception as stream_err:
                         # Avoid crashing Flask response generator on upstream read timeout/reset.
-                        try:
-                            print(f"[NexoraProxy] stream read interrupted: {stream_err}")
-                        except Exception:
-                            pass
+                        _LOGGER.exception("[NexoraProxy] upstream_stream_read_interrupted")
                 else:
                     try:
                         for chunk in upstream.iter_content(chunk_size=chunk_size):
                             if chunk:
                                 yield chunk
                     except Exception as stream_err:
-                        try:
-                            print(f"[NexoraProxy] stream iter interrupted: {stream_err}")
-                        except Exception:
-                            pass
+                        _LOGGER.exception("[NexoraProxy] upstream_stream_iteration_interrupted")
             finally:
                 try:
                     upstream.close()
@@ -758,7 +754,7 @@ if sock is not None:
                 enable_multithread=True,
             )
         except Exception as e:
-            print(f"[NexoraProxy] WS 转发连接失败 path=/ws/{safe_path} error={e}")
+            _LOGGER.exception("[NexoraProxy] websocket_forward_connect_failed path=/ws/%s", safe_path)
             return
 
         remote_ws.settimeout(None)
@@ -847,7 +843,7 @@ def nc_select_folder():
         print(f"[NexoraCode] project folder selected: {path}")
         return jsonify({"success": True, "path": path})
     except Exception as e:
-        print(f"[NexoraCode] select folder failed: {e}")
+        _LOGGER.exception("[NexoraCode] project_folder_selection_failed")
         return jsonify({"success": False, "message": str(e)})
 
 
