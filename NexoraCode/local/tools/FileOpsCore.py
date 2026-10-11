@@ -37,6 +37,9 @@ _PROBE_ENCODINGS = ("utf-8-sig", "utf-8", "gbk", "utf-16", "utf-16-le", "utf-16-
 _PROBE_CHUNK_SIZE = 64 * 1024
 _WRITE_CHUNK_SIZE = 1024 * 1024
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+# 按行读取时单行字符上限：压缩产物（打包 JS/CSS）单行可达数十万字符，
+# 整行原样返回会一次吃掉整个上下文。超长行只保留前 N 个字符，保持线性顺序读取语义。
+READ_LINE_CHAR_LIMIT = 2000
 
 
 def resolve_allowed_file_path(path: str, context: dict | None = None, access: str = "read"):
@@ -413,6 +416,33 @@ def parse_integer_argument(value, name: str, minimum: int) -> tuple[int, str]:
     return parsed, ""
 
 
+def _clip_overlong_lines(lines: list[str]) -> tuple[list[str], int]:
+    """按行读取时裁剪超长单行，返回 (处理后的行列表, 被裁剪的行数)。
+
+    超长行只保留前 READ_LINE_CHAR_LIMIT 个字符并追加截断标记，保持「从某行往下顺序读」
+    的线性语义；不做前后包夹，避免破坏顺序读取的心智模型。
+    keepends=True 时行尾换行符保留，保证拼接结果仍是合法文本。
+    """
+    clipped_lines = []
+    clipped_count = 0
+
+    for line in lines:
+        body = line.rstrip("\r\n")
+        ending = line[len(body):]
+
+        if len(body) <= READ_LINE_CHAR_LIMIT:
+            clipped_lines.append(line)
+            continue
+
+        clipped_lines.append(
+            f"{body[:READ_LINE_CHAR_LIMIT]}"
+            f"...(该行共 {len(body)} 字符，已截断，完整内容请用 offset/limit 按字符读取){ending}"
+        )
+        clipped_count += 1
+
+    return clipped_lines, clipped_count
+
+
 def slice_read_content(
     content: str,
     start_line,
@@ -477,7 +507,8 @@ def slice_read_content(
 
         effective_end = total_lines if end is None else min(end, total_lines)
         truncated = end is not None and effective_end < end
-        selected_content = "".join(lines[start - 1:effective_end])
+        selected_lines, clipped_line_count = _clip_overlong_lines(lines[start - 1:effective_end])
+        selected_content = "".join(selected_lines)
         slice_meta = {
             "type": "line_range",
             "start_line": start,
@@ -485,6 +516,11 @@ def slice_read_content(
             "returned_lines": effective_end - start + 1,
             "total_lines": total_lines,
         }
+
+        if clipped_line_count:
+            slice_meta["line_truncated"] = True
+            slice_meta["clipped_lines"] = clipped_line_count
+            slice_meta["line_char_limit"] = READ_LINE_CHAR_LIMIT
 
         if end is None:
             slice_meta["to_eof"] = True

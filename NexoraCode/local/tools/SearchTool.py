@@ -32,6 +32,13 @@ DEFAULT_EXCLUDE_DIRS = {
     "build",
 }
 
+# 命中行裁剪：压缩产物（打包 JS/CSS）单行可达数十万字符，整行原样返回会一次吃掉整个上下文。
+# 按「命中点周围窗口」裁剪，窗口宽度与查询词长度成比例，同时设硬上限防止长查询词把窗口撑爆。
+MATCH_WINDOW_RATIO = 5
+MATCH_WINDOW_MIN = 50
+MATCH_WINDOW_MAX = 500
+
+
 DEFAULT_TEXT_EXTENSIONS = {
     ".bat",
     ".cfg",
@@ -241,11 +248,19 @@ class TextSearchTool(LocalTool):
                     after_end = min(len(lines), line_index + safe_context_lines + 1)
                     after = lines[line_index + 1:after_end]
 
+                clipped_line, line_clipped = _clip_match_line(
+                    line_text,
+                    found.start(),
+                    found.end(),
+                    len(search_text),
+                )
+
                 matches.append({
                     "path": str(file_path),
                     "line_number": line_index + 1,
                     "column": found.start() + 1,
-                    "line": line_text,
+                    "line": clipped_line,
+                    "line_truncated": line_clipped,
                     "before": before,
                     "after": after,
                 })
@@ -416,6 +431,30 @@ class FileSearchTreeTool(LocalTool):
             "scanned_entries": scanned_entries,
             "skipped": skipped,
         }
+
+
+def _clip_match_line(line_text: str, hit_start: int, hit_end: int, query_length: int) -> tuple[str, bool]:
+    """把命中行裁剪到命中点周围的窗口，返回 (裁剪后文本, 是否被裁剪)。
+
+    窗口宽度 = 查询词长度 × MATCH_WINDOW_RATIO，夹在 [MATCH_WINDOW_MIN, MATCH_WINDOW_MAX] 之间。
+    保留区间为 [命中点 - 窗口, 命中点结束 + 窗口]，被裁掉的两端用 "..." 标记，
+    让模型知道该行不完整、需要时自行 local_file_read 精读。
+    短行（本身不超过窗口）原样返回，不做任何改动。
+    """
+    window = max(MATCH_WINDOW_MIN, min(MATCH_WINDOW_MAX, query_length * MATCH_WINDOW_RATIO))
+    line_length = len(line_text)
+
+    keep_start = max(0, hit_start - window)
+    keep_end = min(line_length, hit_end + window)
+
+    if keep_start == 0 and keep_end == line_length:
+        return line_text, False
+
+    head_marker = "..." if keep_start > 0 else ""
+    tail_marker = "..." if keep_end < line_length else ""
+    clipped = f"{head_marker}{line_text[keep_start:keep_end]}{tail_marker}"
+
+    return clipped, True
 
 
 def _normalize_string_list(value) -> list[str]:

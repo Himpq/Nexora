@@ -570,6 +570,11 @@ def _present_matches(matches: list, detail: dict) -> str:
         if path or line_number:
             prefix = f"{path}:{line_number}"
 
+        # 工具层已按命中点窗口裁剪超长行（压缩产物），此处只补一个可见标记，
+        # 让模型知道该行不完整、需要时自行 local_file_read 精读，不再二次截断。
+        if match.get("line_truncated") is True:
+            line_text = f"{line_text}  [该行过长，已按命中点裁剪，完整内容请用 local_file_read 精读]"
+
         if prefix:
             lines.append(f"{prefix}  {line_text}" if line_text else prefix)
         else:
