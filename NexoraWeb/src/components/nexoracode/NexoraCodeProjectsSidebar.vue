@@ -49,13 +49,15 @@
                     class="nexoracode-sidebar-project"
                     :class="{ 'is-collapsed': isProjectCollapsed(group) }"
                 >
-                    <div class="nexoracode-sidebar-project-row">
+                    <div
+                        class="nexoracode-sidebar-project-row"
+                        @click="toggleProject(group)"
+                    >
                         <button
                             type="button"
                             class="nexoracode-sidebar-project-main"
                             :title="group.project.path || group.project.name"
                             :aria-expanded="!isProjectCollapsed(group)"
-                            @click="toggleProject(group)"
                         >
                             <i class="fa-solid fa-folder nexoracode-sidebar-project-icon" aria-hidden="true"></i>
                             <span class="nexoracode-sidebar-project-name">{{ group.project.name }}</span>
@@ -69,7 +71,7 @@
                                 class="nexoracode-sidebar-icon-btn"
                                 title="在此项目新建会话"
                                 aria-label="在此项目新建会话"
-                                @click="handleNewProjectConversation(group.project)"
+                                @click.stop="handleNewProjectConversation(group.project)"
                             >
                                 <i class="fa-solid fa-message" aria-hidden="true"></i>
                             </button>
@@ -79,7 +81,7 @@
                                 title="展开 / 折叠项目会话"
                                 aria-label="展开 / 折叠项目会话"
                                 :aria-expanded="!isProjectCollapsed(group)"
-                                @click="toggleProject(group)"
+                                @click.stop="toggleProject(group)"
                             >
                                 <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
                             </button>
@@ -122,7 +124,7 @@
 </template>
 
 <script setup lang="ts">
-    import { computed, ref } from 'vue'
+    import { computed, onMounted, ref } from 'vue'
 
     import type { ConversationSummary } from '@/api/conversations'
     import type { ConversationBranchRow } from '@/stores/conversation'
@@ -133,7 +135,9 @@
     import { showError } from '@/stores/notify'
     import { useConversationStore } from '@/stores/conversation'
     import {
+        fetchSidebarCollapseState,
         loadSidebarCollapseState,
+        resolveProjectCollapsed,
         saveSidebarCollapseState,
     } from '@/composables/useSidebarCollapseState'
     import ConversationSidebarItem from '@/components/ConversationSidebarItem.vue'
@@ -169,7 +173,7 @@
     /** 各项目已点「展开更多」的次数(未记录时视为 0,即默认只显示最新 5 条) */
     const expandedSteps = ref(new Map<string, number>())
 
-    /** 折叠状态写入 localStorage,下次打开侧边栏时自动恢复 */
+    /** 折叠状态写入后端(权威)+ localStorage 缓存,下次打开侧边栏时自动恢复 */
     function persistCollapseState(): void {
         saveSidebarCollapseState({
             projects: projectsCollapsed.value,
@@ -177,25 +181,52 @@
         })
     }
 
+    /**
+     * 挂载后拉取后端权威状态并应用。
+     *
+     * 组件挂载时先用 localStorage 缓存渲染(同步,避免闪默认态),这里再异步覆盖:
+     * 桌面端每次启动端口都变,localStorage 跨启动读不到,后端才是可靠来源。
+     * 用户已在本会话内手动操作过(状态被改动)时不覆盖,避免异步结果回退用户操作。
+     */
+    let collapseTouched = false
+
+    onMounted(async () => {
+        const state = await fetchSidebarCollapseState()
+
+        if (collapseTouched) {
+            return
+        }
+
+        projectsCollapsed.value = state.projects
+        collapseOverrides.value = new Map(Object.entries(state.projectOverrides))
+    })
+
     function toggleProjectsSection(): void {
         projectsCollapsed.value = !projectsCollapsed.value
+        collapseTouched = true
         persistCollapseState()
     }
 
+    /** 当前会话是否落在该项目内(仅决定未手动操作时的默认展开) */
+    function holdsCurrentConversation(group: NexoraCodeProjectConversationGroup): boolean {
+        return group.rows.some((row) => row.conversation.id === props.currentId)
+    }
+
+    /** 项目是否收起(规则见 resolveProjectCollapsed) */
     function isProjectCollapsed(group: NexoraCodeProjectConversationGroup): boolean {
-        const override = collapseOverrides.value.get(group.project.project_id)
-
-        if (override !== undefined) {
-            return override
-        }
-
-        return !group.rows.some((row) => row.conversation.id === props.currentId)
+        return resolveProjectCollapsed({
+            holdsCurrent: holdsCurrentConversation(group),
+            override: collapseOverrides.value.get(group.project.project_id),
+        })
     }
 
     function toggleProject(group: NexoraCodeProjectConversationGroup): void {
+        // 任意项目都可手动切换(含当前会话所在项目):写入折叠记录后由
+        // resolveProjectCollapsed 让手动记录优先,不再被「自动展开」压住。
         const next = new Map(collapseOverrides.value)
         next.set(group.project.project_id, !isProjectCollapsed(group))
         collapseOverrides.value = next
+        collapseTouched = true
         persistCollapseState()
     }
 

@@ -439,6 +439,8 @@ body.learning-workspace-active #newChatBtn[data-learning-primary-action="back"] 
   display: flex;
   align-items: center;
   gap: 8px;
+  /* 撑满行高:让文字区域本身也覆盖整行,配合行级点击扩大热区 */
+  align-self: stretch;
   background: none;
   border: none;
   padding: 0;

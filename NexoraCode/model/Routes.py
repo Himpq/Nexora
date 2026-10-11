@@ -14,6 +14,7 @@ NexoraCode.model.Routes — 本地 Agent 对话路由
 from __future__ import annotations
 
 import json
+import logging
 import time
 import threading
 from pathlib import Path
@@ -51,6 +52,7 @@ from .ToolPermissionPolicy import (
 from .turn_injection import collapse_context_injection_steps, plan_injection
 
 
+_LOGGER = logging.getLogger(__name__)
 _local_bp = Blueprint("local_agent", __name__)
 
 # 提示词注入长度上限：避免超长自定义内容挤占上下文窗口。
@@ -879,8 +881,8 @@ def local_agent_create_conversation():
             "permission_mode": global_permission["mode"],
             "approval_model_id": global_permission["approval_model_id"],
         })
-    except Exception as exc:
-        print(f"[LocalAgent] init conversation settings failed: {exc}")
+    except Exception:
+        _LOGGER.exception("[LocalAgent] init_conversation_settings_failed conversation=%s", conversation_id)
 
     return jsonify({"success": True, "conversation_id": conversation_id, "title": title})
 
@@ -1135,7 +1137,7 @@ def local_agent_grant_permission():
     )
 
     if not bool(result.get("success", False)):
-        print(f"[LocalAgent] grant failed: {result.get('error')}")
+        _LOGGER.error("[LocalAgent] permission_grant_failed conversation=%s", conversation_id)
         return jsonify({"success": False, "message": result.get("error") or "授权失败"}), 502
 
     print(f"[LocalAgent] grant OK: path={result.get('permission', {}).get('path')}")
@@ -1181,18 +1183,19 @@ def _execute_resumed_tool(
                 "confirmed_tool_call": True,
             },
         )
-    except Exception as exc:
-        print(f"[LocalAgent] resume tool execution raised conversation={conversation_id} "
-              f"tool={tool_name} error={type(exc).__name__}: {exc}")
+    except Exception:
+        _LOGGER.exception(
+            "[LocalAgent] resume_tool_execution_failed conversation=%s tool=%s",
+            conversation_id,
+            tool_name,
+        )
         return False, ""
 
     detail = execution.get("result") if isinstance(execution.get("result"), dict) else execution
     success = bool(execution.get("success", False))
 
     if not success:
-        error_text = str(execution.get("error") or detail.get("error") or "工具执行失败")
-        print(f"[LocalAgent] resume tool failed conversation={conversation_id} "
-              f"tool={tool_name} error={error_text}")
+        _LOGGER.error("[LocalAgent] resume_tool_failed conversation=%s tool=%s", conversation_id, tool_name)
         return False, ""
 
     from .Present import present_tool_result
@@ -1247,7 +1250,7 @@ def _start_resume_stream(conversation_id: str, conversation: dict, resume_messag
 
         record = start_task(body)
     except ValueError as exc:
-        print(f"[LocalAgent] resume failed conversation={conversation_id} error={exc}")
+        _LOGGER.error("[LocalAgent] resume_failed conversation=%s reason=%s", conversation_id, exc)
         return {"started": False, "message": str(exc)}
 
     print(f"[LocalAgent] resume started conversation={conversation_id} stream_id={record.get('stream_id')}")
@@ -1693,12 +1696,46 @@ def local_agent_stream_status():
     return jsonify({"success": True, "sessions": rows})
 
 
+# UI 偏好键：桌面端每次启动本地服务端口都会变（见 core/server.py bind_local_port），
+# localStorage 按 origin 隔离会导致跨启动读不到，因此侧边栏折叠状态改由后端持久化。
+_UI_PREFERENCE_KEYS = ("ui_sidebar_collapse",)
+
+
+def _read_ui_preferences() -> dict:
+    """读取已持久化的 UI 偏好；缺失/损坏时返回空对象，不阻断页面。"""
+    stored = config.get("ui_preferences", {})
+
+    if not isinstance(stored, dict):
+        return {}
+
+    return {
+        key: stored[key]
+        for key in _UI_PREFERENCE_KEYS
+        if isinstance(stored.get(key), dict)
+    }
+
+
 @_local_bp.route("/api/user/preferences", methods=["GET", "POST"])
 def local_agent_preferences():
     if request.method == "POST":
-        return jsonify({"success": True})
+        payload = request.get_json(silent=True)
+        incoming = payload.get("preferences") if isinstance(payload, dict) else None
 
-    return jsonify({"success": True, "preferences": {}})
+        if not isinstance(incoming, dict):
+            return jsonify({"success": False, "message": "preferences 必须是对象"}), 400
+
+        # 只接受白名单键，避免任意键写入 config.json 污染其它设置。
+        merged = _read_ui_preferences()
+
+        for key in _UI_PREFERENCE_KEYS:
+            if isinstance(incoming.get(key), dict):
+                merged[key] = incoming[key]
+
+        config.set("ui_preferences", merged)
+
+        return jsonify({"success": True, "preferences": merged})
+
+    return jsonify({"success": True, "preferences": _read_ui_preferences()})
 
 
 @_local_bp.route("/api/user/profile", methods=["GET"])
