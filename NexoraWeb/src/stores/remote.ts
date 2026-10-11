@@ -6,7 +6,7 @@
  *   - 主区只读同一份状态渲染消息、下发任务、回答权限问卡。
  *
  * 因此状态不能放在任一组件里，必须集中在这里，两个视图才不会各读一份。
- * 传输细节（游标轮询、显式状态机）在 network/remoteTaskStream.ts，本文件不碰。
+ * 传输细节（WebSocket 事件流、游标补读与显式状态机）在 network/remoteTaskStream.ts。
  */
 
 import { markRaw, reactive, watch, type WatchStopHandle } from 'vue'
@@ -35,6 +35,8 @@ import {
 } from '@/network/remoteTaskStream'
 import {
     applyRemoteEvent,
+    applyRemoteFinalMessage,
+    beginRemoteQueuedTurn,
     createRemoteUserMessage,
     createStreamingAssistant,
     finalizeStreamingMessage,
@@ -872,11 +874,41 @@ class RemoteStore {
             return session.stream
         }
 
+        /**
+         * 当前轮次的助手气泡。
+         *
+         * 接管已在跑的任务时 restore() 会把游标归零、从头重放整条流，
+         * 历史轮次的 content / tool 事件也会被再读一次。若一律写到「最后一条
+         * assistant」，重放的历史内容会灌进本轮气泡。这里用轮次指针隔离：
+         * queue_turn_start 指向本轮，queue_turn_end 后置空，置空期间的普通
+         * 事件属于已落盘的历史轮次，直接丢弃。
+         */
+        let turnTarget: ChatMessage | null = null
+
         session.stream = markRaw(new RemoteTaskStream(this.deviceId, {
             onEvent: (event) => {
-                const target = session.messages[session.messages.length - 1]
+                // 队列轮次切分：电脑端多轮共用一条流，每轮以 queue_turn_start 开头。
+                // 这里必须自己重建用户气泡与助手占位——本地通道有 pendingStreams
+                // 缓冲，云端 Remote 主区没有，不处理就会「队列消息在云端看不见」。
+                if (event.type === 'queue_turn_start') {
+                    turnTarget = beginRemoteQueuedTurn(session.messages, event, this.takeNextMessageIndex(session))
 
-                if (!target || target.status !== 'streaming') {
+                    return
+                }
+
+                if (event.type === 'queue_turn_end') {
+                    applyRemoteFinalMessage(turnTarget, event.final_message)
+                    turnTarget = null
+
+                    return
+                }
+
+                // 未收到 queue_turn_start 的普通事件（单轮任务、或本轮首帧先于
+                // 切分帧到达）：回退到「最后一条 assistant」。
+                const target = turnTarget
+                    || [...session.messages].reverse().find(message => message.role === 'assistant')
+
+                if (!target) {
                     return
                 }
 
@@ -887,6 +919,19 @@ class RemoteStore {
                 session.stageDetail = meta?.cancel_requested || next === 'stopping'
                     ? '已请求停止，等待电脑确认'
                     : meta?.stage_detail || ''
+
+                if (isTerminalRemoteTaskState(next)) {
+                    const activeAssistant = turnTarget
+                        || [...session.messages].reverse().find(message =>
+                            message.role === 'assistant' && message.status === 'streaming'
+                        )
+
+                    if (activeAssistant?.status === 'streaming') {
+                        finalizeStreamingMessage(activeAssistant)
+                    }
+
+                    turnTarget = null
+                }
 
                 if (meta?.conversation_id) {
                     this.adoptSessionId(key, meta.conversation_id)

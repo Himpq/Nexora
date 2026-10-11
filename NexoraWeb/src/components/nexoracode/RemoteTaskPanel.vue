@@ -47,10 +47,10 @@
                 </div>
 
                 <MessageItem
-                    v-for="message in store.messages"
+                    v-for="(message, position) in store.messages"
                     :key="message.index"
                     :message="message"
-                    :streaming="message.status === 'streaming' && !store.stopping"
+                    :streaming="isLiveAssistant(message, position)"
                     nexoracode
                     :conversation-id="store.conversationId"
                     readonly
@@ -142,6 +142,20 @@
 
     const scrollerRef = ref<HTMLElement | null>(null)
     const prepending = ref(false)
+
+    /**
+     * 尾标驱动：只有「本会话正在跑 + 该消息是最后一条助手消息 + 未请求停止」才闪烁。
+     *
+     * 不再读 message.status —— 电脑端工具轮会单独落盘、队列轮次会切换气泡，
+     * 占位消息的 status 常常不是 'streaming'，导致正文渲染了但小点不出现。
+     * 会话级运行态是权威信号，消息位置决定它属于哪一轮。
+     */
+    function isLiveAssistant(message: { role: string }, position: number): boolean {
+        return store.running
+            && !store.stopping
+            && message.role === 'assistant'
+            && position === store.messages.length - 1
+    }
 
     /** 终态异常才提示:执行中/成功由侧边栏的运行标记与消息内的状态承载,不占用主区。 */
     const stateError = computed(() => {

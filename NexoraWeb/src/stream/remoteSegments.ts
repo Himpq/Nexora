@@ -198,8 +198,164 @@ export function createStreamingAssistant(index: number): ChatMessage {
         content: '',
         status: 'streaming',
         pending: true,
+        outputFinished: false,
         segments: [],
     }
+}
+
+/**
+ * 队列轮次开始：把上一轮定稿，并追加（或复用）本轮的用户气泡与助手占位。
+ *
+ * 电脑端队列多轮共用同一条流，靠 queue_turn_start / queue_turn_end 切分气泡。
+ * 云端 Remote 主区没有本地 pendingStreams 缓冲，只能在这里按事件重建：
+ *   - message 为本轮用户输入（引导消息同样带）；
+ *   - user_index / assistant_index 是电脑端落盘后的权威下标，直接采用，
+ *     不再本地自增，避免与历史行下标脱锚后 key 复用错位。
+ *
+ * 幂等性：接管一个已在跑的任务时 restore() 会把游标归零、从头重放整条流，
+ * 历史轮次的 queue_turn_start 会被再读一次。此时该轮的用户气泡与助手消息
+ * 已经由 loadConversationHistory 落进 messages，无条件 push 会把气泡翻倍。
+ * 因此这里按权威下标定位：命中就复用（重置为流式占位），未命中才追加。
+ *
+ * 返回本轮新的助手占位，供后续事件继续累积。
+ */
+export function beginRemoteQueuedTurn(
+    messages: ChatMessage[],
+    event: RemoteTaskEvent,
+    fallbackIndex: number,
+): ChatMessage {
+    const previous = messages[messages.length - 1]
+
+    if (previous?.role === 'assistant' && previous.status === 'streaming') {
+        finalizeStreamingMessage(previous)
+    }
+
+    const userIndex = Number(event.user_index)
+    const assistantIndex = Number(event.assistant_index)
+    const resolvedUserIndex = Number.isFinite(userIndex) ? userIndex : fallbackIndex
+    const resolvedAssistantIndex = Number.isFinite(assistantIndex) ? assistantIndex : resolvedUserIndex + 1
+    const text = String(event.message || '')
+
+    // 重放场景：该轮已经落进 messages，就地复用，不重复追加。
+    const existingUser = messages.find(message => message.role === 'user' && Number(message.index) === resolvedUserIndex)
+
+    if (existingUser) {
+        if (text) {
+            existingUser.content = text
+        }
+    } else {
+        messages.push(createRemoteUserMessage(resolvedUserIndex, text))
+    }
+
+    const existingAssistant = messages.find(
+        message => message.role === 'assistant' && Number(message.index) === resolvedAssistantIndex
+    )
+
+    if (existingAssistant) {
+        // 已存在的可能是历史里已定稿的那条；重放时它后面还有新内容，
+        // 重置为流式占位让后续事件继续累积。
+        existingAssistant.status = 'streaming'
+        existingAssistant.pending = true
+        existingAssistant.outputFinished = false
+        dropOrphanPlaceholder(messages, existingAssistant)
+
+        return existingAssistant
+    }
+
+    const assistant = createStreamingAssistant(resolvedAssistantIndex)
+
+    messages.push(assistant)
+
+    return assistant
+}
+
+/**
+ * 清掉接管时预建的孤儿占位。
+ *
+ * syncActiveTasks 在 restore() 之前会先用 takeNextMessageIndex 建一条空占位，
+ * 而重放的 queue_turn_start 带来的是电脑端落盘后的权威下标，两者可能不同。
+ * 权威下标的那条已复用后，这条空占位就是多余的，留着会在对话尾部
+ * 多出一个永远不动的空气泡。
+ */
+function dropOrphanPlaceholder(messages: ChatMessage[], keep: ChatMessage): void {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index]
+
+        if (message === keep) {
+            continue
+        }
+
+        const isPlaceholder = message.role === 'assistant'
+            && message.status === 'streaming'
+            && String(message.content || '').trim() === ''
+            && (message.segments || []).length === 0
+
+        if (isPlaceholder) {
+            messages.splice(index, 1)
+        }
+    }
+}
+
+/**
+ * 队列轮次结束：用电脑端落盘的最终消息覆盖本轮助手气泡并定稿。
+ *
+ * 电脑端在 queue_turn_end 里带上该轮已收尾的 assistant 消息（含 metadata
+ * 里的 process_steps）。用它重建分段才能保住工具链时序；流式期间累积的
+ * 正文在重建后若丢失则回填，避免气泡闪空。
+ */
+export function applyRemoteFinalMessage(
+    message: ChatMessage | null | undefined,
+    finalMessage: Record<string, unknown> | null | undefined,
+): void {
+    if (!message) {
+        return
+    }
+
+    if (finalMessage && typeof finalMessage === 'object') {
+        const incoming = String(finalMessage.content ?? '')
+
+        if (incoming.trim() !== '' || String(message.content || '').trim() === '') {
+            message.content = incoming
+        }
+
+        if (finalMessage.metadata && typeof finalMessage.metadata === 'object') {
+            message.metadata = finalMessage.metadata as Record<string, unknown>
+        }
+
+        if (typeof finalMessage.timestamp === 'string' && finalMessage.timestamp) {
+            message.timestamp = finalMessage.timestamp
+        }
+
+        const v4Fields = ['status', 'model', 'usage', 'io_tokens_window', 'io_tokens_cumulative', 'trace'] as const
+
+        v4Fields.forEach((key) => {
+            if (Object.prototype.hasOwnProperty.call(finalMessage, key)) {
+                ;(message as unknown as Record<string, unknown>)[key] = finalMessage[key]
+            }
+        })
+    }
+
+    const preContent = String(message.content || '')
+    const preSegments = Array.isArray(message.segments) ? [...message.segments] : []
+
+    rebuildSegmentsForMessage(message)
+
+    if (String(message.content || '').trim() === '' && preContent.trim() !== '') {
+        message.content = preContent
+
+        const hasContentSegment = (message.segments || []).some(
+            segment => segment.type === 'content' && String(segment.text || '').trim() !== ''
+        )
+
+        if (!hasContentSegment) {
+            message.segments = [
+                ...(message.segments || []),
+                ...preSegments.filter(segment => segment.type === 'content' || segment.type === 'reasoning'),
+            ]
+        }
+    }
+
+    finalizeStreamingMessage(message)
 }
 
 /**
@@ -420,9 +576,10 @@ export function applyRemoteEvent(
     }
 }
 
-/** 事件流结束后收尾：正文落定、去掉 pending，工具结果按轮次归档。 */
+/** 事件流结束后收尾：标记正文完成、去掉 pending，工具结果按轮次归档。 */
 export function finalizeStreamingMessage(message: ChatMessage): void {
     message.status = 'completed'
     message.pending = false
+    message.outputFinished = true
     message.segments = (message.segments || []).filter(segment => segment.text !== '')
 }
