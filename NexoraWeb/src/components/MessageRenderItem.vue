@@ -218,3 +218,20 @@
 
     const ctx = inject(MESSAGE_ITEM_RENDER_KEY) as MessageItemRenderContext
 </script>
+
+<style scoped>
+    .stream-caret {
+        display: inline-block;
+        width: 7px;
+        height: 15px;
+        margin-left: 2px;
+        vertical-align: -2px;
+        background: #94a3b8;
+        animation: nc-caret-blink 1s steps(2, start) infinite;
+    }
+
+    @keyframes nc-caret-blink {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0; }
+    }
+</style>

@@ -6,14 +6,18 @@
  *   收尾后,最终回复之前的全部内容(思考/工具/过程正文)应收进外层折叠区,
  *   只留最终回复平铺,避免中间过程淹没结论。
  *
- * 折叠条件(全部满足才折叠):
- *   1. 最后一项必须是正文(content)—— 最后一项是工具/思考/错误都不折叠
- *   2. 最后一项不能是错误(error 分段)
- *   3. 消息不在流式中
- *   4. 中断时:最后一项是正文(哪怕只输出一半)可折叠;是工具则不折叠
+ * 切分基准是「最后一个正文分段」,而不是「渲染项数组的最后一项」:
+ *   电脑端工具轮单独落盘、远端历史经 mergeToolOnlyAssistantRows 合并后,
+ *   一条消息的末项常常是工具行(该轮以工具调用收尾),按末项判定会让整条
+ *   消息永远折不上。工具行属于过程,不应阻断折叠。
  *
- * 规则 1 已天然覆盖规则 4 的「工具不折叠」:中断后最后一项是工具 → 不折;
- * 中断后最后一项是半截正文 → 折(用户要求如此,半截正文仍算结论)。
+ * 折叠条件(全部满足才折叠):
+ *   1. 存在正文(content)分段 —— 没有任何结论就没有可留的平铺内容
+ *   2. 最后一个正文分段不是错误(error 分段)
+ *   3. 消息不在流式中
+ *   4. 最后一个正文分段之前必须还有其它渲染项
+ *
+ * 未作答的 question 卡片永不折叠:折进去用户看不到授权入口。
  *
  * 抽成纯函数是为了可单测 —— 组件内的 computed 无法直接测试。
  */
@@ -30,6 +34,21 @@ export interface ProcessFoldOptions {
     isStreaming: boolean
     /** 该 question 项是否已作答(未作答的永不折叠) */
     isQuestionAnswered: (item: ProcessFoldItem) => boolean
+}
+
+/** 最后一个正文渲染项在 items 中的下标;没有正文分段时返回 -1 */
+export function resolveFinalContentIndex(items: Array<ProcessFoldItem>): number {
+    if (!Array.isArray(items)) {
+        return -1
+    }
+
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+        if (items[index].kind === 'content') {
+            return index
+        }
+    }
+
+    return -1
 }
 
 /**
@@ -52,23 +71,20 @@ export function resolveProcessItemIndexes(
         return indexes
     }
 
-    // 规则 1:最后一项必须是正文,否则(工具/思考/错误/提问)一律不折叠。
-    // 这同时覆盖了规则 4 的「中断后最后一项是工具 → 不折叠」。
-    const last = items[items.length - 1]
+    // 规则 1:必须存在正文分段,否则(纯工具轮/纯思考轮)没有可平铺的结论
+    const finalIndex = resolveFinalContentIndex(items)
 
-    if (last.kind !== 'content') {
+    if (finalIndex < 0) {
         return indexes
     }
 
-    // 规则 2:最后一项是错误分段时不折叠
+    // 规则 2:最后一个正文分段是错误分段时不折叠
     // (error 分段在 renderItems 里被归为 kind='tool',此处按分段类型再兜一层)
-    if (last.segment?.type === 'error') {
+    if (items[finalIndex].segment?.type === 'error') {
         return indexes
     }
 
-    const finalIndex = items.length - 1
-
-    // 正文就是第一项时没有过程可折
+    // 规则 4:正文就是第一项时没有过程可折
     if (finalIndex <= 0) {
         return indexes
     }

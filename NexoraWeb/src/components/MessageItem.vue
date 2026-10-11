@@ -277,7 +277,8 @@
     import type { ContextInjectionStep } from '@/stream/contextInjection'
     import { parseContextInjectionStep, resolveActiveContextInjectionStep } from '@/stream/contextInjection'
     import { hasAnyIo, readMessageIoTokens } from '@/stream/tokenBudget'
-    import { buildProcessSectionSummary, resolveProcessItemIndexes } from '@/stream/processFold'
+    import { buildProcessSectionSummary, resolveFinalContentIndex, resolveProcessItemIndexes } from '@/stream/processFold'
+    import { resolveStreamCaretIndex } from '@/stream/streamCaret'
     import {
         MESSAGE_ITEM_RENDER_KEY,
         type MessageItemRenderContext,
@@ -703,27 +704,32 @@
      * 折叠容器收起时 grid-template-rows 归零,内部所有内容高度塌陷。
      * 因此最终回复必须渲染在容器之外,否则会被一并隐藏。
      *
-     * 切分依据是 processItemIndexes(存的是 sourceIndex),按数组位置切。
+     * 切分基准与 resolveProcessItemIndexes 一致:最后一个正文分段。
+     * 该分段之后可能还有工具行(该轮以工具调用收尾),它们属于过程,
+     * 必须留在容器内,不能因为「在数组末尾」被当成最终回复。
      */
+    const finalContentIndex = computed<number>(() => resolveFinalContentIndex(renderItems.value))
+
     const processItems = computed<Array<RenderItem>>(() => {
         const items = renderItems.value
 
-        if (processItemIndexes.value.size === 0) {
+        // finalContentIndex < 0 表示没有正文分段,此时不切分:
+        // slice(0, -1) 在 JS 里是「倒数第一项之前」,会把末项错切出去。
+        if (processItemIndexes.value.size === 0 || finalContentIndex.value < 0) {
             return []
         }
 
-        // 折叠时最后一项(最终回复)始终留在容器外
-        return items.slice(0, Math.max(0, items.length - 1))
+        return items.slice(0, finalContentIndex.value)
     })
 
     const finalItems = computed<Array<RenderItem>>(() => {
         const items = renderItems.value
 
-        if (processItemIndexes.value.size === 0) {
+        if (processItemIndexes.value.size === 0 || finalContentIndex.value < 0) {
             return items
         }
 
-        return items.slice(Math.max(0, items.length - 1))
+        return items.slice(finalContentIndex.value)
     })
 
     /**
@@ -1146,19 +1152,21 @@
     }
 
     /**
-     * 正文流式尾标:仅当本条消息生成中、该段是最后一个分段且为正文时显示光标。
-     * (思考行有节点脉冲/滚动窗口,工具行有执行中状态,互不打架)
+     * 正文流式尾标:定位「最后一个正文分段」,而不是「最后一个分段」。
+     *
+     * 工具轮里分段末尾是 function_call / function_result,若要求末段必须是
+     * content,则每次工具调用后尾标都会消失,直到模型重新吐正文才回来 ——
+     * 表现为「工具调用后输出提示小球不见了」。工具行有自己的执行中状态,
+     * 不需要靠尾标表达,所以尾标应当挂在最后一个正文分段上。
+     *
+     * 不读 message.pending:云端 Remote 主区的 pending 会被 queue_turn_end /
+     * done 帧的定稿置为 false,上一轮收尾时当前气泡的 pending 可能已变 false,
+     * 尾标便整轮不再出现。props.streaming 是会话级权威信号。
      */
-    const tailContentIndex = computed<number>(() => {
-        if (!props.streaming || !props.message.pending || props.message.outputFinished) {
-            return -1
-        }
-
-        const segments = contentSegments.value
-        const last = segments.length > 0 ? segments[segments.length - 1] : undefined
-
-        return last && last.type === 'content' ? segments.length - 1 : -1
-    })
+    const tailContentIndex = computed<number>(() => resolveStreamCaretIndex(contentSegments.value, {
+        isStreaming: !!props.streaming,
+        outputFinished: !!props.message.outputFinished,
+    }))
 
     function isTailContent(item: TextRenderItem): boolean {
         return item.sourceIndex === tailContentIndex.value
@@ -1785,21 +1793,6 @@
 
 <style scoped>
     /* 正文流式尾标光标(DeepSeek 风格:文本末尾闪烁方块,仅合成器层动画不阻塞主线程) */
-    .stream-caret {
-        display: inline-block;
-        width: 7px;
-        height: 15px;
-        margin-left: 2px;
-        vertical-align: -2px;
-        background: #94a3b8;
-        animation: nc-caret-blink 1s steps(2, start) infinite;
-    }
-
-    @keyframes nc-caret-blink {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0; }
-    }
-
     /* 正文尾标(stream-caret)显示时,隐藏 legacy pending ●(style.css .message-content::after),
        避免同一消息内两个闪烁指示重复;思考/等待首 token 阶段(无正文尾标)保留 ● */
     .message.assistant.pending.stream-caret-active .message-content::after {
