@@ -23,6 +23,10 @@ NexoraCode/asset_manifest.json
 NexoraCode/build/
 NexoraCode/dist/
 NexoraCode/.venv-build/
+# PyInstaller 打包工作目录（work/ 中间产物 + dist/ 成品）。
+# 注意：不能靠上面的 .codex 规则覆盖——那条规则无尾斜杠也无通配，
+# 只能精确匹配名为 .codex 的条目，匹配不到 .codex-build。
+NexoraCode/.codex-build/
 NexoraCode/*.spec.bak
 NexoraCode/*.zip
 NexoraCode/release/
