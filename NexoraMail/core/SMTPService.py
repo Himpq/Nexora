@@ -426,7 +426,30 @@ def parse_subject(original_text):
     except Exception:
         return ''
 
-def handle_mail_from(conn, cmds, state: SessionState) -> None:
+def _sender_policy_settings():
+    """Return the inbound sender-policy settings block (snake_case canonical)."""
+    try:
+        settings = conf.get('SMTPServices', {}).get('settings', {}) or {}
+        return settings.get('sender_policy', {}) or {}
+    except Exception:
+        return {}
+
+
+def _sender_policy_enabled():
+    try:
+        return bool(_sender_policy_settings().get('enabled', True))
+    except Exception:
+        return True
+
+
+def _local_part(address: str) -> str:
+    try:
+        return str(address or '').split('@', 1)[0].strip().lower()
+    except Exception:
+        return ''
+
+
+def handle_mail_from(conn, cmds, state: SessionState, userGroup=None) -> None:
     if len(cmds) < 2:
         raise ErrorService.SMTPInvalidCommand(
             "501",
@@ -453,8 +476,74 @@ def handle_mail_from(conn, cmds, state: SessionState) -> None:
             "Invalid mail from address",
             log_message=f"MAIL FROM error: Invalid address: {mail_from}")
 
+    # --- Sender ownership policy -------------------------------------------
+    # Two distinct cases must be handled differently:
+    #   1) Authenticated session (a local user submitting mail): the envelope
+    #      sender must belong to that authenticated user. This blocks an
+    #      authenticated user from impersonating another local mailbox.
+    #   2) Unauthenticated session (an external MTA delivering inbound mail):
+    #      legitimate inbound mail must still be accepted, but the envelope
+    #      sender must NOT claim an address in one of our own domains, since
+    #      only authenticated local users may use our domains as sender.
+    # The policy is configurable so operators can relax it for gateway/relay
+    # setups; it never blocks ordinary external inbound mail.
+    if userGroup is not None and _sender_policy_enabled():
+        policy = _sender_policy_settings()
+        try:
+            sender_domain = mail_from.split('@', 1)[1].strip().lower()
+        except Exception:
+            sender_domain = ''
+
+        if state.authenticated:
+            # Authenticated: sender must match the logged-in user (or a domain
+            # the operator explicitly allows that user to send as).
+            auth_user = ''
+            try:
+                auth_user = (state.user or {}).get('username', '') or ''
+            except Exception:
+                auth_user = ''
+
+            if auth_user:
+                allow_domains = [str(d).strip().lower() for d in (policy.get('auth_user_allow_domains') or [])]
+                sender_local = _local_part(mail_from)
+                same_user = (sender_local == _local_part(auth_user))
+                allowed_domain = sender_domain in allow_domains
+                if not (same_user or allowed_domain):
+                    state.log(
+                        f"MAIL FROM rejected: sender {mail_from} does not match "
+                        f"authenticated user {auth_user}")
+                    raise ErrorService.SMTPInvalidCommand(
+                        "550",
+                        "5.7.1 Sender address must match the authenticated user",
+                        log_message=f"MAIL FROM rejected: {mail_from} != auth user {auth_user}")
+        else:
+            # Unauthenticated (inbound): reject only spoofing of our own domains.
+            reject_local_sender = bool(policy.get('reject_unauthenticated_local_sender', True))
+            try:
+                own_domains = userGroup.getDomains() or []
+            except Exception:
+                own_domains = []
+
+            if reject_local_sender and sender_domain and sender_domain in [
+                str(d).strip().lower() for d in own_domains
+            ]:
+                state.log(
+                    f"MAIL FROM rejected: unauthenticated client {state.peer} "
+                    f"claimed local domain {sender_domain}")
+                raise ErrorService.SMTPInvalidCommand(
+                    "550",
+                    "5.7.1 Sender address rejected: not owned by this server",
+                    log_message=(
+                        f"MAIL FROM rejected: unauthenticated peer {state.peer} "
+                        f"used local domain {sender_domain}"))
+
     state.reset_envelope()
     state.mail_from = mail_from
+    # Record the delivering peer for tracing (does NOT rewrite the envelope).
+    try:
+        state.attributes['peer_ip'] = state.peer
+    except Exception:
+        pass
     state.log(f"MAIL FROM accepted: {mail_from}")
     _send_response(conn, "250 Mail from ok.")
 
@@ -734,6 +823,29 @@ def handle_auth(conn, connfile, cmds, state: SessionState, userGroup):
             "501",
             "Syntax error",
             log_message="AUTH error: Invalid syntax")
+
+    # Credentials must never cross the wire in cleartext. AUTH LOGIN/PLAIN only
+    # base64-encode the password, so without TLS the password is effectively
+    # plaintext. Requiring TLS here also defeats STARTTLS stripping attacks.
+    # This does NOT affect inbound mail delivery: external MTAs never issue
+    # AUTH, so the "receive mail on port 25" path is untouched.
+    require_tls = True
+    try:
+        smtp_settings = conf.get('SMTPSettings', {}) or {}
+        smtp_service_settings = conf.get('SMTPServices', {}).get('settings', {}) or {}
+        if 'requireTLSForAuth' in smtp_settings:
+            require_tls = bool(smtp_settings.get('requireTLSForAuth'))
+        elif 'require_tls_for_auth' in smtp_service_settings:
+            require_tls = bool(smtp_service_settings.get('require_tls_for_auth'))
+    except Exception:
+        require_tls = True
+
+    if require_tls and not state.using_tls:
+        state.log("AUTH rejected: TLS required before authentication")
+        raise ErrorService.SMTPAuthError(
+            "538",
+            "5.7.11 Encryption required for requested authentication mechanism",
+            log_message="AUTH error: TLS required for authentication")
 
     auth_type = cmds[1].upper()
     if auth_type not in ['LOGIN', 'PLAIN']:
@@ -1036,7 +1148,7 @@ def handle(conn: socket.socket, addr, user_group, listen_port):
                 elif cmd == 'AUTH':
                     handle_auth(conn, connfile, cmds, state, user_group)
                 elif cmd == 'MAIL':
-                    handle_mail_from(conn, cmds, state)
+                    handle_mail_from(conn, cmds, state, user_group)
                 elif cmd == 'RCPT':
                     handle_rcpt_to(conn, cmds, state, user_group)
                 elif cmd == 'DATA':
@@ -1160,6 +1272,18 @@ def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup
             'timestamp': int(time.time()),
             'id': mail_id
         }
+        # Trace the delivering peer without rewriting the envelope sender.
+        try:
+            peer_ip = None
+            if session is not None:
+                peer_ip = (getattr(session, 'attributes', {}) or {}).get('peer_ip')
+                if not peer_ip:
+                    peer_ip = getattr(session, 'peer', None)
+            if peer_ip:
+                mail_info['peer_ip'] = peer_ip
+                mail_info['authenticated'] = bool(getattr(session, 'authenticated', False))
+        except Exception:
+            pass
         with open(os.path.join(mail_dir, 'mail.json'), 'w', encoding='utf-8') as f:
             json.dump(mail_info, f, indent=2)
             loginfo.write(f"[{sender}][SMTP] Mail {mail_id} saved successfully")

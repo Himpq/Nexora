@@ -37,6 +37,12 @@ def _default_config():
                     "report_recipient": "",
                     "recent_subject_count": 5,
                 },
+                "sender_policy": {
+                    "enabled": True,
+                    "reject_unauthenticated_local_sender": True,
+                    "auth_user_allow_domains": [],
+                },
+                "require_tls_for_auth": True,
             },
             "services": {
                 "25": {"bind_ip": "0.0.0.0", "ssl": False, "user_group": "default"},

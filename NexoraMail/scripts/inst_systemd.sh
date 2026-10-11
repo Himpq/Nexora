@@ -41,7 +41,7 @@ backup_unit_if_exists "${TARGET_UNIT_PATH}"
 echo "Writing systemd unit: ${MAIL_UNIT_NAME}"
 cat > /tmp/${MAIL_UNIT_NAME} <<EOF
 [Unit]
-Description=NexoraMail Core (SMTP/POP3/IMAP)
+Description=NexoraMail Core (SMTP/POP3)
 After=network.target network-online.target
 Wants=network-online.target
 
