@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>NexoraLearning</title>
+    <style>
+        html, body, #state, iframe { width: 100%; height: 100%; margin: 0; border: 0; }
+        body { font: 14px system-ui, sans-serif; color: #222; background: #f6f7f9; }
+        #state { display: grid; place-content: center; gap: 8px; padding: 20px; box-sizing: border-box; text-align: center; }
+        #state[hidden] { display: none; }
+    </style>
+</head>
+<body>
+    <div id="state">正在连接 NexoraLearning…</div>
+    <script>
+        (async function () {
+            const state = document.getElementById("state");
+            try {
+                const response = await fetch("/api/local/plugins/nexoralearning/settings", { credentials: "include" });
+                const payload = await response.json();
+                if (!response.ok || !payload.success) throw new Error(payload.message || "无法读取插件设置");
+                const values = payload.values || {};
+                const base = String(values.service_url || "http://127.0.0.1:5001").trim().replace(/\/+$/, "");
+                const target = new URL(base + "/api/frontend/");
+                if (values.username) target.searchParams.set("username", String(values.username));
+                const frame = document.createElement("iframe");
+                frame.title = "NexoraLearning";
+                frame.src = target.toString();
+                document.body.appendChild(frame);
+                state.hidden = true;
+            } catch (error) {
+                state.textContent = "读取 NexoraLearning 配置失败：" + String(error.message || error);
+            }
+        })();
+    </script>
+</body>
+</html>

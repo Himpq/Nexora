@@ -1,0 +1,42 @@
+{
+  "id": "nexoralearning",
+  "name": "NexoraLearning",
+  "version": "0.1.0",
+  "api_version": 1,
+  "description": "在 NexoraCode 本地打开 NexoraLearning，并向本地 Agent 提供课程查询工具。",
+  "entrypoint": "plugin.py:register",
+  "enabled_by_default": false,
+  "capabilities": ["network"],
+  "surfaces": ["local"],
+  "settings": {
+    "title": "NexoraLearning 连接",
+    "description": "配置正在运行的本地 NexoraLearning 服务。",
+    "type": "object",
+    "properties": {
+      "service_url": {
+        "type": "string",
+        "title": "服务地址",
+        "description": "NexoraLearning 本地服务地址。",
+        "default": "http://127.0.0.1:5001",
+        "placeholder": "http://127.0.0.1:5001"
+      },
+      "username": {
+        "type": "string",
+        "title": "学习用户名",
+        "description": "可留空，由 NexoraLearning 自行识别当前用户。",
+        "default": ""
+      }
+    },
+    "required": ["service_url"]
+  },
+  "ui": {
+    "pages": [
+      {
+        "id": "learning-home",
+        "title": "NexoraLearning",
+        "entry": "ui/index.html",
+        "icon": "fa-solid fa-graduation-cap"
+      }
+    ]
+  }
+}
