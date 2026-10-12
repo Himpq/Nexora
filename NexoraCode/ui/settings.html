@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="/settings-controls.css?v=20261010_integrated_settings_01"/>
     <link rel="stylesheet" href="/settings-sections.css?v=20261010_integrated_settings_01"/>
     <link rel="stylesheet" href="/permissions-settings.css?v=20261010_integrated_settings_01"/>
+    <link rel="stylesheet" href="/plugins-settings.css"/>
     <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css"/>
 </head>
 <body>
@@ -58,6 +59,7 @@
                     </div>
                 </div>
                 <button type="button" class="nav-item" data-view="remote">远程连接</button>
+                <button type="button" class="nav-item" data-view="plugins">插件</button>
                 <button type="button" class="nav-item" data-view="about">关于</button>
             </nav>
             <div class="nav-foot">本地模式 · 对话与会话均在本地</div>
@@ -320,6 +322,12 @@
                     <li>会话全部存储在本地，路径访问遵循本地授权。</li>
                 </ul>
             </section>
+
+            <section id="view-plugins" class="view">
+                <h1>插件</h1>
+                <p class="sub">把插件目录放到 NexoraCode/plugins/，在这里查看、启用和配置。插件代码会在本机运行，请只启用可信来源的插件；远程 Agent 只能调用显式开放的只读插件工具，启停变更需要重启生效。</p>
+                <div id="plugin-list" class="plugin-list" aria-live="polite">正在读取插件…</div>
+            </section>
         </main>
 
         <div class="bar">
@@ -331,5 +339,6 @@
     <script src="/settings.js"></script>
     <script src="/permissions-settings.js?v=20261010_integrated_settings_01"></script>
     <script src="/remote-settings.js"></script>
+    <script src="/plugins-settings.js"></script>
 </body>
 </html>

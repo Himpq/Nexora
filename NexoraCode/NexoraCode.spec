@@ -7,7 +7,7 @@ from PyInstaller.utils.hooks import collect_all
 # - 不打 config.json：NexoraCode 根目录下不存在该文件，运行时读的是 data/config.json。
 # - vendor 只打 ui/static/vendor 自带副本（与 ChatDBServer/static/vendor 内容一致），
 #   不再跨项目引用 ..\ChatDBServer，打包环境无该目录会导致构建失败。
-datas = [('asset_manifest.json', '.'), ('ui', 'ui')]
+datas = [('asset_manifest.json', '.'), ('ui', 'ui'), ('plugins', 'plugins')]
 binaries = []
 hiddenimports = ['webview.platforms.winforms', 'webview.platforms.edgechromium', 'local.tools.ShellTool', 'local.tools.FileTool', 'local.tools.BrowserCore', 'local.tools.BrowserTool', 'local.tools.ImageSearchTool', 'tools.imgspd', 'tools.imgspd.bing', 'tools.imgspd.bing_common', 'tools.imgspd.crawlee_bing', 'tools.imgspd.mediawiki', 'tools.imgspd.models', 'tools.imgspd.anti_spider']
 tmp_ret = collect_all('webview')

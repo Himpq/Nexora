@@ -3287,7 +3287,7 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
             backoff_seconds = 3.0
 
             # 2. 注册工具
-            tools = registry.list_tools_llm_format()
+            tools = registry.list_tools_llm_format(surface="remote")
             tool_names = [
                 str(((tool.get("function") or {}).get("name") or tool.get("name") or "")).strip()
                 for tool in tools
@@ -3373,7 +3373,7 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
                                 }
                                 if isinstance(request_context, dict):
                                     task_context.update(request_context)
-                                result = registry.execute(tool_name, args, context=task_context)
+                                result = registry.execute(tool_name, args, context=task_context, surface="remote")
                                 exec_ms = (time.perf_counter() - exec_started_at) * 1000.0
                             except Exception as e:
                                 _LOGGER.exception("[NexoraCode WSS] tool_execution_failed tool=%s", tool_name)
@@ -3586,7 +3586,7 @@ def main():
         _EARLY_PAGE_ACCEL_JS = _EARLY_PAGE_ACCEL_JS.replace("__NC_AUTH_TRACE__", "true" if auth_trace else "false")
     if "__NC_AUTH_TRACE_HEARTBEAT__" in _EARLY_PAGE_ACCEL_JS:
         _EARLY_PAGE_ACCEL_JS = _EARLY_PAGE_ACCEL_JS.replace("__NC_AUTH_TRACE_HEARTBEAT__", "true" if _AUTH_TRACE_HEARTBEAT else "false")
-    tools = registry.list_tools_llm_format()
+    tools = registry.list_tools_llm_format(surface="remote")
     startup_tool_names = [
         str(((tool.get("function") or {}).get("name") or tool.get("name") or "")).strip()
         for tool in tools

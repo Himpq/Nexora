@@ -1888,6 +1888,9 @@ def register_local_routes(app, executor=None) -> None:
         set_default_executor(executor)
 
     app.register_blueprint(_local_bp)
+    plugin_manager = getattr(executor, "plugin_manager", None) if executor is not None else None
+    if plugin_manager is not None:
+        plugin_manager.register_routes(app)
     from .TaskService import task_bp, set_worker_factory
     from .TitleGenerator import set_title_listener
 

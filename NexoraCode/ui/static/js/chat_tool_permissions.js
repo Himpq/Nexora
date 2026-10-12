@@ -1,6 +1,6 @@
 const TOOL_PERMISSION_MODES = [
     { id: 'read_only', name: '只读' },
-    { id: 'confirm', name: '写入 / 命令确认' },
+    { id: 'confirm', name: '写入 / 命令 / 网络确认' },
     { id: 'auto', name: '自动审批' },
     { id: 'full', name: '完全访问' },
 ];

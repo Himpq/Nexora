@@ -316,7 +316,7 @@ class AgentLoop:
 
         if get_permission_settings(conversation_id)["mode"] == "auto":
             effective_system += (
-                "\n\n自动审批协作要求：调用写入、命令或进程变更工具前，先在普通回复中用一句简短的话说明"
+                "\n\n自动审批协作要求：调用写入、命令、网络或进程变更工具前，先在普通回复中用一句简短的话说明"
                 "准备执行什么操作，以及它如何对应当前用户请求；不要输出内部推理。"
             )
 

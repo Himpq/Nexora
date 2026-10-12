@@ -158,7 +158,15 @@ def classify_tool_call(executor, tool_name: str, arguments: Any) -> dict:
     canonical_name = str(getattr(tool, "name", "") or requested_name)
     args = _parse_arguments(arguments)
 
-    if canonical_name in _READ_TOOL_NAMES:
+    declared_operation = str(getattr(tool, "permission_operation", "") or "").strip().lower()
+
+    if (
+        tool is not None
+        and str(getattr(tool, "plugin_id", "") or "").strip()
+        and declared_operation in {"read", "write", "command", "network"}
+    ):
+        operation = declared_operation
+    elif canonical_name in _READ_TOOL_NAMES:
         operation = "read"
     # FilePatchTool 的 dry_run 只生成预览；实际写入仍需进入写操作审批。
     elif (
@@ -316,8 +324,8 @@ def log_tool_permission_event(
     reason: str = "",
     token_usage: dict | None = None,
 ) -> None:
-    """记录写入和命令权限决策，不记录命令正文、路径或工具参数。"""
-    if operation not in {"command", "write"}:
+    """记录写入、命令和网络权限决策，不记录参数正文或秘密。"""
+    if operation not in {"command", "write", "network"}:
         return
 
     event = {

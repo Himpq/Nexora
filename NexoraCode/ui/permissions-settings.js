@@ -17,11 +17,11 @@
         },
         {
             id: "confirm",
-            name: "写入 / 命令确认",
+            name: "写入 / 命令 / 网络确认",
             icon: "fa-eye",
             color: "#3b82f6",
             tint: "rgba(59, 130, 246, 0.12)",
-            description: "写入文件或执行命令前询问"
+            description: "写入文件、执行命令或发起插件网络请求前询问"
         },
         {
             id: "auto",
@@ -409,7 +409,10 @@
 
             var operation = document.createElement("strong");
             operation.className = "permission-event-operation";
-            operation.textContent = (event.operation === "command" ? "命令" : "写入") + " · " + String(event.tool || "未知工具");
+            var operationLabel = event.operation === "command"
+                ? "命令"
+                : (event.operation === "network" ? "网络访问" : "写入");
+            operation.textContent = operationLabel + " · " + String(event.tool || "未知工具");
 
             var timestamp = document.createElement("time");
             timestamp.className = "permission-event-time";

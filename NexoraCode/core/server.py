@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
-from flask import Flask, request, jsonify, Response, stream_with_context, render_template
+from flask import Flask, request, jsonify, Response, stream_with_context, render_template, send_file
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -148,7 +148,7 @@ _HOP_HEADERS = {
 }
 
 
-def _rewrite_html_for_local_proxy(html: str) -> str:
+def _rewrite_html_for_local_proxy(html: str, *, inject_plugins: bool = False) -> str:
     text = str(html or "")
     if not text:
         return text
@@ -225,6 +225,17 @@ def _rewrite_html_for_local_proxy(html: str) -> str:
 
     if "data-nc-nonblocking=\"1\"" in out:
         print("[NexoraProxy] html rewrite enabled non-blocking styles for external CSS")
+    try:
+        plugin_manager = getattr(registry, "plugin_manager", None)
+        has_plugin_ui = bool(inject_plugins and plugin_manager and plugin_manager.frontend_plugins())
+    except Exception:
+        has_plugin_ui = False
+    if has_plugin_ui and "data-nc-plugin-host" not in out:
+        plugin_script = '<script src="/nc/plugins/host.js" defer data-nc-plugin-host="1"></script>'
+        if re.search(r"</body\s*>", out, flags=re.IGNORECASE):
+            out = re.sub(r"</body\s*>", plugin_script + "</body>", out, count=1, flags=re.IGNORECASE)
+        elif re.search(r"</head\s*>", out, flags=re.IGNORECASE):
+            out = re.sub(r"</head\s*>", plugin_script + "</head>", out, count=1, flags=re.IGNORECASE)
     return out
 
 
@@ -549,7 +560,11 @@ def _proxy_request(path: str):
         if "text/html" in ct_lower:
             try:
                 txt = body_bytes.decode(upstream.encoding or "utf-8", errors="replace")
-                txt = _rewrite_html_for_local_proxy(txt)
+                clean_path = str(path or "").strip("/").casefold()
+                txt = _rewrite_html_for_local_proxy(
+                    txt,
+                    inject_plugins=clean_path in {"", "chat"} or clean_path.startswith("chat/"),
+                )
                 body_bytes = txt.encode("utf-8", errors="replace")
                 content_type = "text/html; charset=utf-8"
             except Exception:
@@ -604,7 +619,7 @@ def tool_execute():
     tool_name = data.get("tool")
     params = data.get("params", {})
 
-    result = registry.execute(tool_name, params)
+    result = registry.execute(tool_name, params, surface="remote")
     return jsonify(result)
 
 
@@ -677,6 +692,23 @@ def nc_vendor_asset(asset_path: str):
         return resp
     except Exception:
         return Response(status=502)
+
+
+@app.route("/nc/plugins/host.js", methods=["GET"])
+def local_plugin_host_asset():
+    target = get_bundle_root() / "ui" / "plugin-host.js"
+    if not target.is_file():
+        return Response(status=404)
+    return send_file(target, mimetype="application/javascript", max_age=0)
+
+
+@app.route("/nc/plugins/<plugin_id>/<path:asset_path>", methods=["GET"])
+def local_plugin_ui_asset(plugin_id: str, asset_path: str):
+    manager = getattr(registry, "plugin_manager", None)
+    target = manager.resolve_ui_asset(plugin_id, asset_path) if manager else None
+    if target is None:
+        return Response(status=404)
+    return send_file(target, max_age=0)
 
 
 if sock is not None:
@@ -912,6 +944,8 @@ def _local_agent_enabled_value() -> bool:
 @app.route("/settings.js")
 @app.route("/permissions-settings.js")
 @app.route("/remote-settings.js")
+@app.route("/plugins-settings.css")
+@app.route("/plugins-settings.js")
 def local_settings_asset():
     """本地设置页静态资源。"""
     name = str(request.path or "").lstrip("/")
@@ -928,6 +962,52 @@ def local_settings_page():
     if not target.is_file():
         return Response("settings not built", status=503, mimetype="text/plain")
     return _serve_file(target, cache_seconds=0)
+
+
+@app.route("/api/local/plugins", methods=["GET"])
+def local_plugins_list():
+    manager = getattr(registry, "plugin_manager", None)
+    return jsonify({"success": True, "plugins": manager.list_plugins() if manager else []})
+
+
+@app.route("/api/local/plugins/ui", methods=["GET"])
+def local_plugins_ui_manifest():
+    manager = getattr(registry, "plugin_manager", None)
+    return jsonify({"success": True, "plugins": manager.frontend_plugins() if manager else []})
+
+
+@app.route("/api/local/plugins/<plugin_id>/enabled", methods=["POST"])
+def local_plugin_set_enabled(plugin_id: str):
+    manager = getattr(registry, "plugin_manager", None)
+    body = request.get_json(silent=True)
+    if manager is None or not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
+        return jsonify({"success": False, "message": "插件状态请求无效"}), 400
+    try:
+        manager.set_enabled(plugin_id, body["enabled"])
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 404
+    return jsonify({
+        "success": True,
+        "enabled": body["enabled"],
+        "restart_required": True,
+        "message": "插件状态已保存，重启 NexoraCode 后生效",
+    })
+
+
+@app.route("/api/local/plugins/<plugin_id>/settings", methods=["GET", "PUT"])
+def local_plugin_settings(plugin_id: str):
+    manager = getattr(registry, "plugin_manager", None)
+    if manager is None:
+        return jsonify({"success": False, "message": "插件管理器未就绪"}), 503
+    try:
+        if request.method == "GET":
+            settings = manager.get_settings(plugin_id)
+        else:
+            body = request.get_json(silent=True)
+            settings = manager.save_settings(plugin_id, body.get("settings") if isinstance(body, dict) else None)
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+    return jsonify({"success": True, **settings})
 
 
 @app.route("/api/local/settings", methods=["GET"])

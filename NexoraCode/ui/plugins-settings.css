@@ -1,0 +1,121 @@
+.plugin-list {
+    display: grid;
+    gap: 14px;
+    margin-top: 20px;
+}
+
+.plugin-card {
+    padding: 18px;
+    border: 1px solid var(--border, rgba(127, 127, 127, .24));
+    border-radius: 12px;
+    background: var(--surface, rgba(127, 127, 127, .06));
+}
+
+.plugin-card-header,
+.plugin-card-title-row,
+.plugin-settings-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.plugin-card-title {
+    margin: 0;
+    font-size: 16px;
+}
+
+.plugin-card-meta,
+.plugin-card-description,
+.plugin-card-status {
+    color: var(--muted, #888);
+    font-size: 12px;
+}
+
+.plugin-card-description {
+    margin: 9px 0 14px;
+    font-size: 13px;
+}
+
+.plugin-card-status.is-error {
+    color: #d45b5b;
+}
+
+.plugin-card-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.plugin-tag {
+    padding: 3px 8px;
+    border: 1px solid var(--border, rgba(127, 127, 127, .24));
+    border-radius: 999px;
+    color: var(--muted, #888);
+    font-size: 11px;
+}
+
+.plugin-tag-capability {
+    color: #b7791f;
+}
+
+.plugin-enabled-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    white-space: nowrap;
+}
+
+.plugin-settings-form {
+    display: grid;
+    gap: 12px;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border, rgba(127, 127, 127, .2));
+}
+
+.plugin-settings-field {
+    display: grid;
+    gap: 6px;
+}
+
+.plugin-settings-field > span {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.plugin-settings-field small {
+    color: var(--muted, #888);
+    font-size: 12px;
+}
+
+.plugin-settings-field input,
+.plugin-settings-field select {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 36px;
+    padding: 7px 10px;
+    border: 1px solid var(--border, rgba(127, 127, 127, .28));
+    border-radius: 7px;
+    background: var(--input, rgba(127, 127, 127, .08));
+    color: inherit;
+}
+
+.plugin-settings-actions button {
+    min-height: 34px;
+}
+
+.plugin-settings-status {
+    margin: 0;
+    color: var(--muted, #888);
+    font-size: 12px;
+}
+
+.plugin-empty-state {
+    padding: 22px;
+    border: 1px dashed var(--border, rgba(127, 127, 127, .3));
+    border-radius: 10px;
+    color: var(--muted, #888);
+    text-align: center;
+}

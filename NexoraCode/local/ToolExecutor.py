@@ -118,14 +118,27 @@ class ToolExecutor:
 
         return [tool.parameters for tool in self._tools.values() if not tool.hidden]
 
-    def list_tools_llm_format(self) -> list[dict]:
-        """返回 OpenAI-compatible 格式工具定义，供注册到 Nexora 服务器。"""
+    def list_tools_llm_format(self, *, surface: str | None = "local") -> list[dict]:
+        """返回 OpenAI-compatible 工具定义；surface 可限制 local / remote 暴露范围。
+
+        插件工具通过远程 Agent 暴露时只发布只读工具；远程执行链没有本地交互式审批。
+        """
 
         result = []
 
         for tool in self._tools.values():
 
             if tool.hidden:
+                continue
+
+            if surface and surface not in tuple(getattr(tool, "surfaces", ("local", "remote"))):
+                continue
+
+            if (
+                surface == "remote"
+                and str(getattr(tool, "plugin_id", "") or "").strip()
+                and str(getattr(tool, "permission_operation", "write") or "write").strip().lower() != "read"
+            ):
                 continue
 
             result.append({
@@ -146,6 +159,7 @@ class ToolExecutor:
         context: Any = None,
         *,
         timeout: float | None = None,
+        surface: str = "local",
     ) -> dict:
         """执行一次工具调用。
 
@@ -154,6 +168,7 @@ class ToolExecutor:
             args: 模型传入的参数 dict
             context: 调用上下文（dict 或 ToolContext），含 conversation_id / is_cancelled
             timeout: 可选执行超时秒数，超时返回错误（线程无法强杀，仅放弃等待）
+            surface: 调用入口；设为 remote 时强制检查远程暴露范围与插件操作类型。
 
         Returns:
             {"success", "result"} 成功；{"success": False, "error", ...} 失败。
@@ -173,6 +188,29 @@ class ToolExecutor:
                 }
 
             return {"success": False, "error": f"Unknown tool: {tool_name}"}
+
+        tool_surfaces = tuple(getattr(tool, "surfaces", ("local", "remote")))
+        if surface not in {"local", "remote"}:
+            return {"success": False, "error": f"Unknown tool surface: {surface}"}
+
+        if surface not in tool_surfaces:
+            return {
+                "success": False,
+                "error": f"Tool {tool.name} is not available on the {surface} surface",
+            }
+
+        if surface == "remote" and str(getattr(tool, "plugin_id", "") or "").strip() and tool.hidden:
+            return {"success": False, "error": "隐藏的插件工具不能由远程 Agent 调用。"}
+
+        if (
+            surface == "remote"
+            and str(getattr(tool, "plugin_id", "") or "").strip()
+            and str(getattr(tool, "permission_operation", "write") or "write").strip().lower() != "read"
+        ):
+            return {
+                "success": False,
+                "error": "远程 Agent 目前只能调用只读插件工具；写入、命令和网络插件工具请在本地 Agent 中调用并确认。",
+            }
 
         payload = args if isinstance(args, dict) else {}
         normalized, errors = validate_parameters(payload, tool.parameters)
@@ -273,4 +311,9 @@ def build_default_executor(**kwargs) -> ToolExecutor:
     executor = ToolExecutor(**kwargs)
     executor.register_all(TOOLS)
     executor.register_aliases(TOOL_ALIASES)
+    from .PluginManager import PluginManager
+
+    plugin_manager = PluginManager()
+    plugin_manager.load(executor)
+    executor.plugin_manager = plugin_manager
     return executor

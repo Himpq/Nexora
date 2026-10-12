@@ -96,6 +96,9 @@ class LocalTool:
     hidden: ClassVar[bool] = False
     timeout_seconds: ClassVar[float] = 0
     max_output_chars: ClassVar[int] = 0
+    plugin_id: ClassVar[str] = ""
+    permission_operation: ClassVar[str] = "write"
+    surfaces: ClassVar[tuple[str, ...]] = ("local", "remote")
 
     def run(self, args: dict, context: ToolContext) -> dict:
         raise NotImplementedError

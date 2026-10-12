@@ -5,12 +5,14 @@ NexoraCode.local — NexoraCode 本地基础层
 - Schema: 轻量 JSON Schema 子集校验器
 - Tool: 工具基类（schema 与实现合一）
 - ToolExecutor: 工具执行器（注册 / 校验 / 线程池 / 大输出 / 取消）
+- PluginManager: 本地插件发现与扩展注册
 - PathGuard: 路径准入与隐私守卫
 - tools: 全部本地工具实例
 
 对外提供：
 - LocalTool / ToolContext: 工具基类与上下文
 - ToolExecutor / build_default_executor: 执行器与默认构建入口
+- PluginManager / PluginAPI: 插件发现、启用与扩展注册 API
 """
 
 from __future__ import annotations
@@ -18,4 +20,5 @@ from __future__ import annotations
 from .Schema import build_parameters_schema, validate_parameters
 from .Tool import LocalTool, ToolContext
 from .ToolExecutor import ToolExecutor, build_default_executor
+from .PluginManager import PluginAPI, PluginManager
 from .tools import TOOL_ALIASES, TOOLS
