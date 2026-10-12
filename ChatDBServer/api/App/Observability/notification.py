@@ -485,37 +485,86 @@ def _mark_public_notification_read(username: str, notification_id: str) -> Optio
     return _build_public_notification_view(public_row, state)
 
 
-def _update_user_notification(username: str, notification_id: str, updater) -> Tuple[Optional[Dict[str, Any]], int]:
-    target_id = str(notification_id or '').strip()
-
-    if not target_id:
-        raise ValueError('notification_id 不能为空')
-
+def _update_user_notifications(
+    username: str,
+    matcher: Callable[[Dict[str, Any]], bool],
+    updater: Callable[[Dict[str, Any]], Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Update matching personal notices under one file lock and return their unread count."""
     path = _notification_jsonl_path(username)
     lock = get_path_lock(path)
-    updated_row: Optional[Dict[str, Any]] = None
+    updated_rows: List[Dict[str, Any]] = []
     next_rows: List[Dict[str, Any]] = []
 
     with lock:
         rows = _read_notification_rows_from_path(path)
 
         for row in rows:
-            if str(row.get('notification_id') or '') == target_id:
-                updated_row = updater(dict(row))
-                next_rows.append(updated_row)
+            if matcher(row):
+                updated = updater(dict(row))
+                updated_rows.append(updated)
+                next_rows.append(updated)
                 continue
 
             next_rows.append(row)
 
-        if updated_row is None:
-            return None, 0
+        if not updated_rows:
+            return [], 0
 
         _write_notification_rows_to_path(path, next_rows)
 
     visible_rows = [row for row in reversed(next_rows) if not bool(row.get('removed'))]
     unread_count = sum(1 for row in visible_rows if not bool(row.get('read')))
 
-    return updated_row, unread_count
+    return updated_rows, unread_count
+
+
+def _update_user_notification(username: str, notification_id: str, updater) -> Tuple[Optional[Dict[str, Any]], int]:
+    target_id = str(notification_id or '').strip()
+
+    if not target_id:
+        raise ValueError('notification_id 不能为空')
+
+    updated_rows, unread_count = _update_user_notifications(
+        username,
+        lambda row: str(row.get('notification_id') or '') == target_id,
+        updater,
+    )
+
+    if not updated_rows:
+        return None, 0
+
+    return updated_rows[-1], unread_count
+
+
+def _mark_scheduled_task_conversation_notifications_read(username: str, conversation_id: str) -> List[Dict[str, Any]]:
+    """Mark every unread successful scheduled-task notice linked to one conversation."""
+    target_conversation_id = str(conversation_id or '').strip()
+
+    if not target_conversation_id:
+        raise ValueError('conversation_id 不能为空')
+
+    read_at = int(time.time())
+
+    def matches(row: Dict[str, Any]) -> bool:
+        meta = row.get('meta')
+
+        return (
+            row.get('source') == '定时任务'
+            and row.get('level') == 'success'
+            and not bool(row.get('read'))
+            and not bool(row.get('removed'))
+            and isinstance(meta, dict)
+            and str(meta.get('conversation_id') or '').strip() == target_conversation_id
+        )
+
+    def mark_read(row: Dict[str, Any]) -> Dict[str, Any]:
+        row['read'] = True
+        row['read_at'] = read_at
+        return row
+
+    updated_rows, _ = _update_user_notifications(username, matches, mark_read)
+    return updated_rows
 
 
 @notification_bp.route('/api/notifications', methods=['GET'])
@@ -640,6 +689,36 @@ def mark_notification_read(notification_id: str):
         return _json_error(str(exc), 400)
     except Exception as exc:
         print(f"[Notification] read failed notification_id={notification_id}: {exc}")
+        return _json_error('更新通知失败，请查看服务端日志', 500)
+
+
+@notification_bp.route('/api/notifications/conversations/<conversation_id>/read', methods=['POST'])
+def mark_scheduled_task_conversation_notifications_read(conversation_id: str):
+    """打开任务输出会话时，将该会话关联的定时任务通知全部标记为已读。"""
+    try:
+        username = _current_username()
+        _assert_notification_realtime_configured()
+        updated_rows = _mark_scheduled_task_conversation_notifications_read(username, conversation_id)
+        summary = _list_user_notifications(username, 20)
+
+        for item in updated_rows:
+            _publish_notification_event(username, 'notification_read', {
+                'item': item,
+                'unread_count': summary['unread_count'],
+            })
+
+        return jsonify({
+            'success': True,
+            'items': updated_rows,
+            'unread_count': summary['unread_count'],
+        })
+    except PermissionError as exc:
+        return _json_error(str(exc), 401)
+    except ValueError as exc:
+        print(f"[Notification] conversation read validation failed: {exc}")
+        return _json_error(str(exc), 400)
+    except Exception as exc:
+        print(f"[Notification] conversation read failed conversation_id={conversation_id}: {exc}")
         return _json_error('更新通知失败，请查看服务端日志', 500)
 
 

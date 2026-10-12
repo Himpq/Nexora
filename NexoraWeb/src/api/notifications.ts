@@ -40,9 +40,20 @@ interface NotificationMutationResponse {
     item?: NotificationItem
 }
 
+interface NotificationBatchMutationResponse {
+    success: boolean
+    unread_count?: number
+    items?: NotificationItem[]
+}
+
 /** 变更接口统一返回:服务端权威记录 + 未读数(供 store 幂等合入) */
 export interface NotificationMutationResult {
     item?: NotificationItem
+    unreadCount: number
+}
+
+export interface NotificationBatchMutationResult {
+    items: NotificationItem[]
     unreadCount: number
 }
 
@@ -73,6 +84,21 @@ export async function markNotificationRead(notificationId: string): Promise<Noti
     )
 
     return normalizeMutationResponse(data)
+}
+
+/** Mark every scheduled-task notice linked to a conversation as read. */
+export async function markScheduledTaskConversationNotificationsRead(
+    conversationId: string
+): Promise<NotificationBatchMutationResult> {
+    const data = await apiFetch<NotificationBatchMutationResponse>(
+        `/api/notifications/conversations/${encodeURIComponent(conversationId)}/read`,
+        { method: 'POST' }
+    )
+
+    return {
+        items: Array.isArray(data.items) ? data.items : [],
+        unreadCount: Math.max(0, Number(data.unread_count || 0)),
+    }
 }
 
 /** 删除单条通知,返回服务端记录与新的未读数 */

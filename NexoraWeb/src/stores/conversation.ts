@@ -9,6 +9,7 @@
 import { defineStore } from 'pinia'
 
 import type { AttachmentInput } from '@/api/attachments'
+import { markScheduledTaskConversationNotificationsRead } from '@/api/notifications'
 import { fetchTokenStats } from '@/api/tokens'
 import {
     createConversation,
@@ -261,7 +262,17 @@ export const useConversationStore = defineStore('conversation', {
 
         /** 切换当前会话并加载消息(不立即清空旧消息,避免欢迎页闪烁) */
         async openConversation(conversationId: string): Promise<void> {
-            if (!conversationId || conversationId === this.currentId) {
+            if (!conversationId) {
+                return
+            }
+
+            // Persist task-notice reads with the conversation ID so refresh cannot recreate its unread dot.
+            this.clearConversationUnread(conversationId)
+            void markScheduledTaskConversationNotificationsRead(conversationId).catch((error: unknown) => {
+                console.error(`[notification] failed to mark scheduled-task notices read conversation=${conversationId}`, error)
+            })
+
+            if (conversationId === this.currentId) {
                 return
             }
 
@@ -280,9 +291,6 @@ export const useConversationStore = defineStore('conversation', {
             this.messagesLoading = true
             // 切换瞬间先清空旧轮次,避免指示器残留上一个会话的条目
             this.turns = []
-            // 切回即视为已读:清除该会话的未读蓝点
-            this.clearConversationUnread(conversationId)
-
             try {
                 await this.loadMessages(seq)
 
