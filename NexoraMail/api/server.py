@@ -3,6 +3,7 @@ import time
 import json
 import re
 import base64
+import ipaddress
 from types import SimpleNamespace
 from html import unescape
 from functools import wraps
@@ -20,6 +21,17 @@ except Exception:
     import DebugLog
     import SMTPService
     import MailEventQueue
+
+
+class InvalidAPIRequest(Exception):
+    pass
+
+
+def _validate_path_component(value, field):
+    try:
+        return UserManager.validateStorageComponent(value, field)
+    except ValueError as exc:
+        raise InvalidAPIRequest(str(exc)) from exc
 
 
 def _get_api_config():
@@ -103,11 +115,22 @@ def _get_expected_api_key():
     return (os.environ.get("NEXORAMAIL_API_KEY") or os.environ.get("NEXORAMAIL_API_TOKEN") or cfg["api_key"] or "").strip()
 
 
+def _is_loopback_client():
+    remote_addr = request.remote_addr or ""
+    try:
+        return ipaddress.ip_address(remote_addr).is_loopback
+    except ValueError:
+        return False
+
+
 def require_api_token(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
         expected = _get_expected_api_key()
         if not expected:
+            cfg = _get_api_config()
+            if cfg["local_only_when_no_api_key"] and _is_loopback_client():
+                return fn(*args, **kwargs)
             return jsonify({"success": False, "message": "API key not configured"}), 403
         got = _extract_token()
         if got != expected:
@@ -120,18 +143,45 @@ def require_api_token(fn):
 def _normalize_username(username_or_email):
     if not username_or_email:
         return ""
-    s = str(username_or_email).strip()
+    if not isinstance(username_or_email, str):
+        raise InvalidAPIRequest("username must be a string")
+    s = username_or_email.strip()
     if "@" in s:
-        return s.split("@", 1)[0].strip()
-    return s
+        s = s.split("@", 1)[0].strip()
+    return _validate_path_component(s, "username")
 
 
 def _get_group(group_name):
+    if group_name is not None and not isinstance(group_name, str):
+        raise InvalidAPIRequest("group must be a string")
     group = (group_name or "default").strip()
     if not group:
         group = "default"
+    group = _validate_path_component(group, "group")
     ug = UserManager.getGroup(group)
     return group, ug
+
+
+def _get_json_object():
+    payload = request.get_json(silent=True)
+    if payload is None:
+        if request.get_data(cache=True):
+            raise InvalidAPIRequest("request body must contain valid JSON")
+        return {}
+    if not isinstance(payload, dict):
+        raise InvalidAPIRequest("JSON body must be an object")
+    return payload
+
+
+def _get_pagination():
+    raw_offset = request.args.get("offset")
+    raw_limit = request.args.get("limit")
+    try:
+        offset = int(raw_offset) if raw_offset not in (None, "") else 0
+        limit = int(raw_limit) if raw_limit not in (None, "") else 50
+    except (TypeError, ValueError):
+        raise InvalidAPIRequest("offset and limit must be integers")
+    return max(offset, 0), min(max(limit, 1), 200)
 
 
 def _get_user(group_name, username_or_email):
@@ -439,8 +489,8 @@ def _extract_mail_content(raw_content):
 
 def _safe_commonpath(base_path, child_path):
     try:
-        base = os.path.abspath(base_path)
-        child = os.path.abspath(child_path)
+        base = os.path.realpath(base_path)
+        child = os.path.realpath(child_path)
         return os.path.commonpath([base, child]) == base
     except Exception:
         return False
@@ -468,7 +518,7 @@ def _mail_dir_for_box(user_path, mail_id, box="inbox"):
     return _mail_dir_for(root, mail_id)
 
 
-def _load_mail_entry(mail_dir, include_content=False):
+def _load_mail_entry(mail_dir, include_content=False, include_preview=True):
     info_path = os.path.join(mail_dir, "mail.json")
     content_path = os.path.join(mail_dir, "content.txt")
     if not os.path.exists(info_path):
@@ -481,14 +531,19 @@ def _load_mail_entry(mail_dir, include_content=False):
         return None
 
     raw_content = b""
-    try:
-        with open(content_path, "rb") as f:
-            raw_content = f.read()
-    except Exception:
-        raw_content = b""
+    if include_content or include_preview:
+        try:
+            with open(content_path, "rb") as f:
+                raw_content = f.read()
+        except Exception:
+            raw_content = b""
 
-    parsed = _extract_mail_content(raw_content)
-    raw_content_text = raw_content.decode("utf-8", errors="replace")
+    parsed = (
+        _extract_mail_content(raw_content)
+        if include_content or include_preview
+        else {"subject": "", "from": "", "to": "", "date": "", "preview_text": ""}
+    )
+    raw_content_text = raw_content.decode("utf-8", errors="replace") if include_content else ""
     subject = parsed.get("subject", "")
     timestamp = int(meta.get("timestamp", 0) or 0)
     payload = {
@@ -534,40 +589,55 @@ def _load_mail_entry(mail_dir, include_content=False):
         payload["content"] = raw_content_text
         payload["content_text"] = parsed.get("content_text", "")
         payload["content_html"] = parsed.get("content_html", "")
-    else:
+    elif include_preview:
         payload["preview"] = parsed.get("preview_text", "")
     return payload
 
 
-def _list_mails(user_path):
+def _list_mails(user_path, include_preview=True):
     mails = []
     if not user_path or not os.path.isdir(user_path):
         return mails
 
     for mail_id in os.listdir(user_path):
         mail_dir = os.path.join(user_path, mail_id)
-        if not os.path.isdir(mail_dir):
+        if not os.path.isdir(mail_dir) or not _safe_commonpath(user_path, mail_dir):
             continue
-        item = _load_mail_entry(mail_dir, include_content=False)
+        item = _load_mail_entry(mail_dir, include_content=False, include_preview=include_preview)
         if item:
+            if not include_preview:
+                item["_mail_dir"] = mail_dir
             mails.append(item)
     mails.sort(key=lambda x: (x.get("timestamp", 0), x.get("id", "")), reverse=True)
     return mails
 
 
-def _list_sent_mails(user_path):
+def _list_sent_mails(user_path, include_preview=True):
     sent_root = _sent_root_for_user(user_path)
     mails = []
     if not sent_root or not os.path.isdir(sent_root):
         return mails
     for mail_id in os.listdir(sent_root):
         mail_dir = os.path.join(sent_root, mail_id)
-        if not os.path.isdir(mail_dir):
+        if not os.path.isdir(mail_dir) or not _safe_commonpath(sent_root, mail_dir):
             continue
-        item = _load_mail_entry(mail_dir, include_content=False)
+        item = _load_mail_entry(mail_dir, include_content=False, include_preview=include_preview)
         if item:
+            if not include_preview:
+                item["_mail_dir"] = mail_dir
             mails.append(item)
     mails.sort(key=lambda x: (x.get("timestamp", 0), x.get("id", "")), reverse=True)
+    return mails
+
+
+def _materialize_mail_page(summaries):
+    mails = []
+    for summary in summaries:
+        mail_dir = summary.get("_mail_dir")
+        if mail_dir:
+            item = _load_mail_entry(mail_dir, include_content=False)
+            if item:
+                mails.append(item)
     return mails
 
 
@@ -597,6 +667,11 @@ app = Flask(__name__)
 sock = Sock(app)
 
 
+@app.errorhandler(InvalidAPIRequest)
+def invalid_api_request(exc):
+    return jsonify({"success": False, "message": str(exc)}), 400
+
+
 @app.after_request
 def add_public_health_cors_headers(response):
     """允许 Nexora 设置页从浏览器直连读取公开健康检查结果。"""
@@ -619,10 +694,11 @@ def mail_events_socket(ws):
     expected = _get_expected_api_key()
 
     if not expected:
-        ws.send(json.dumps({"type": "error", "message": "NexoraMail API key is not configured"}, ensure_ascii=False))
-        return
-
-    if _extract_token() != expected:
+        cfg = _get_api_config()
+        if not (cfg["local_only_when_no_api_key"] and _is_loopback_client()):
+            ws.send(json.dumps({"type": "error", "message": "NexoraMail API key is not configured"}, ensure_ascii=False))
+            return
+    elif _extract_token() != expected:
         ws.send(json.dumps({"type": "error", "message": "Invalid API key"}, ensure_ascii=False))
         return
 
@@ -631,7 +707,11 @@ def mail_events_socket(ws):
     if raw_cursor.lower() == "end":
         cursor = MailEventQueue.get_event_cursor_end()
     else:
-        cursor = max(0, int(raw_cursor or 0))
+        try:
+            cursor = max(0, int(raw_cursor or 0))
+        except ValueError:
+            ws.send(json.dumps({"type": "error", "message": "cursor must be an integer or 'end'"}, ensure_ascii=False))
+            return
 
     ws.send(json.dumps({"type": "ready", "cursor": cursor}, ensure_ascii=False))
     last_heartbeat = time.time()
@@ -711,7 +791,7 @@ def get_user(group, username):
     if not user:
         return jsonify({"success": False, "message": "user not found"}), 404
     user_path = user.get("path", "")
-    mails = _list_mails(user_path)
+    mails = _list_mails(user_path, include_preview=False)
     return jsonify(
         {
             "success": True,
@@ -729,15 +809,14 @@ def get_user(group, username):
 @app.post("/api/users")
 @require_api_token
 def add_user():
-    payload = request.get_json(silent=True) or {}
-    group = (payload.get("group") or "default").strip()
+    payload = _get_json_object()
+    group, ug = _get_group(payload.get("group"))
     username = _normalize_username(payload.get("username"))
     password = payload.get("password") or ""
     permissions = payload.get("permissions")
     if not username or not password:
         return jsonify({"success": False, "message": "username/password required"}), 400
 
-    ug = UserManager.getGroup(group)
     if username in (ug.users or {}):
         return jsonify({"success": False, "message": "user already exists"}), 409
     ok = ug.addUser(username, password, permissions=permissions)
@@ -747,7 +826,7 @@ def add_user():
 @app.patch("/api/users/<group>/<username>")
 @require_api_token
 def update_user(group, username):
-    payload = request.get_json(silent=True) or {}
+    payload = _get_json_object()
     group_name, ug, uname, user = _get_user(group, username)
     if not user:
         return jsonify({"success": False, "message": "user not found"}), 404
@@ -789,10 +868,9 @@ def list_user_mails(group, username):
         return jsonify({"success": False, "message": "user not found"}), 404
 
     query = (request.args.get("q") or "").strip().lower()
-    offset = max(int(request.args.get("offset", 0) or 0), 0)
-    limit = min(max(int(request.args.get("limit", 50) or 50), 1), 200)
+    offset, limit = _get_pagination()
 
-    mails = _list_mails(user.get("path", ""))
+    mails = _list_mails(user.get("path", ""), include_preview=bool(query))
     if query:
         filtered = []
         for m in mails:
@@ -813,6 +891,8 @@ def list_user_mails(group, username):
     total = len(mails)
     unread_total = sum(1 for m in mails if not bool(m.get("is_read", False)))
     sliced = mails[offset : offset + limit]
+    if not query:
+        sliced = _materialize_mail_page(sliced)
     return jsonify(
         {
             "success": True,
@@ -853,10 +933,9 @@ def list_user_sent_mails(group, username):
         return jsonify({"success": False, "message": "user not found"}), 404
 
     query = (request.args.get("q") or "").strip().lower()
-    offset = max(int(request.args.get("offset", 0) or 0), 0)
-    limit = min(max(int(request.args.get("limit", 50) or 50), 1), 200)
+    offset, limit = _get_pagination()
 
-    mails = _list_sent_mails(user.get("path", ""))
+    mails = _list_sent_mails(user.get("path", ""), include_preview=bool(query))
     if query:
         filtered = []
         for m in mails:
@@ -876,6 +955,8 @@ def list_user_sent_mails(group, username):
 
     total = len(mails)
     sliced = mails[offset : offset + limit]
+    if not query:
+        sliced = _materialize_mail_page(sliced)
     return jsonify(
         {
             "success": True,
@@ -939,7 +1020,7 @@ def update_user_mail_read_state(group, username, mail_id):
     if not user:
         return jsonify({"success": False, "message": "user not found"}), 404
 
-    payload = request.get_json(silent=True) or {}
+    payload = _get_json_object()
     raw_value = payload.get("is_read", payload.get("read", True))
     if isinstance(raw_value, bool):
         is_read = raw_value
@@ -1016,8 +1097,8 @@ def delete_user_mail(group, username, mail_id):
 @app.post("/api/send")
 @require_api_token
 def api_send_mail():
-    payload = request.get_json(silent=True) or {}
-    group_name = (payload.get("group") or "default").strip()
+    payload = _get_json_object()
+    group_name, ug = _get_group(payload.get("group"))
     sender = (payload.get("sender") or "").strip()
     recipient = (payload.get("recipient") or "").strip()
     raw = payload.get("raw")
@@ -1028,7 +1109,6 @@ def api_send_mail():
     if not sender or not recipient:
         return jsonify({"success": False, "message": "sender/recipient required"}), 400
 
-    _, ug = _get_group(group_name)
     data = raw if isinstance(raw, str) and raw.strip() else _compose_mail_raw(sender, recipient, subject, str(content))
     try:
         internal_session, session_err = _build_internal_auth_session(group_name, sender, ug)

@@ -3,6 +3,25 @@ import json
 
 groups = {}
 
+
+def validateStorageComponent(value, field="name"):
+    """Validate a single path component used in the user manager tree."""
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    value = value.strip()
+    if (
+        not value
+        or value in (".", "..")
+        or len(value) > 255
+        or "\x00" in value
+        or "/" in value
+        or "\\" in value
+        or os.path.isabs(value)
+        or bool(os.path.splitdrive(value)[0])
+    ):
+        raise ValueError(f"invalid {field}")
+    return value
+
 def initModule():
     global groups
     groups = {}
@@ -11,6 +30,7 @@ def initModule():
         getGroup("default")
 
 def getGroup(groupname):
+    groupname = validateStorageComponent(groupname, "group")
     if not groupname in groups:
         groups[groupname] = UserGroup(groupname)
     return groups[groupname]
@@ -18,9 +38,9 @@ def getGroup(groupname):
 
 class UserGroup:
     def __init__(self, groupname):
-        self.groupname = groupname
+        self.groupname = validateStorageComponent(groupname, "group")
         self.users = {}
-        self.grouppath = f"./usermanager/{groupname}"
+        self.grouppath = os.path.join(".", "usermanager", self.groupname)
         self.load()
 
     def load(self):
@@ -75,11 +95,12 @@ class UserGroup:
         return email.split('@')[1] if '@' in email else ''
 
     def addUser(self, username, password, permissions=None):
+        username = validateStorageComponent(username, "username")
         if permissions is None:
             # 把原来的 send 拆分为 sendlocal 和 sendrelay，默认新用户允许接收并可向本地发送/使用中继
             permissions = ["receive", "sendlocal", "sendrelay"]
         
-        user_path = f"{self.grouppath}/users/{username}"
+        user_path = os.path.join(self.grouppath, "users", username)
         if not os.path.exists(user_path):
             os.makedirs(user_path)
 
