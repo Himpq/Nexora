@@ -80,16 +80,18 @@ def _wait_for_conversation_idle(task, conversation_id):
 
 
 def _extract_summary(report):
-    """Read the short summary section that appears before the full report."""
+    """Read the last short summary section so progress text cannot replace the result."""
     summary_heading = "## 本次摘要"
     details_heading = "## 完整结果"
-    summary_start = report.find(summary_heading)
-    details_start = report.find(details_heading, summary_start + len(summary_heading))
+    summary_start = report.rfind(summary_heading)
 
-    if summary_start < 0 or details_start < 0:
+    if summary_start < 0:
         return ""
 
-    summary_text = report[summary_start + len(summary_heading):details_start]
+    summary_content_start = summary_start + len(summary_heading)
+    details_start = report.find(details_heading, summary_content_start)
+    summary_end = details_start if details_start >= 0 else len(report)
+    summary_text = report[summary_content_start:summary_end]
     return " ".join(summary_text.split())[:500]
 
 
@@ -114,7 +116,9 @@ def _generate_report(task, conversation_id):
     }
     prompt = (
         "你正在执行用户预先设置的定时任务。可以按需使用当前可用工具，包括搜索、查看、新增或更新知识库；"
-        "不要删除知识条目或修改定时任务。请先用 1 到 3 句话输出简短摘要，再给出完整结果，格式为："
+        "不要删除知识条目或修改定时任务。任务完成后，应用会自动发送站内摘要通知；无需调用工具发送站内通知，"
+        "也不要声称无法发送该站内通知。若任务另要求邮件、短信等站外通知，只能在当前可用工具确实支持时发送，并如实报告结果。"
+        "请先完成全部任务操作，再用 1 到 3 句话概括已完成结果，最后给出完整结果，格式为："
         "\n\n## 本次摘要\n（简短总结）\n\n## 完整结果\n（完整结果）\n\n"
         + task["prompt"]
     )
