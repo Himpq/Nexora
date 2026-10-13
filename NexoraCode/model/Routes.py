@@ -1560,13 +1560,24 @@ def local_agent_user_info():
 
 @_local_bp.route("/api/config", methods=["GET"])
 def local_agent_config():
-    """模型列表：本地 Provider 列表展开为 chat.js 期望的数组格式。"""
+    """模型列表：本地 Provider 列表展开为 chat.js 期望的数组格式。
+
+    default_model 是「用户上次选定的模型」：本地服务端口每次启动随机分配，
+    WebView 的 localStorage 按 origin 隔离，重启后必然为空，任何依赖
+    localStorage 的兜底都会失效。因此这里由后端作为唯一权威来源返回，
+    前端不再自行缓存选中项。
+    """
     models, default_model = _local_agent_model_catalog()
     model_ids = {model["id"] for model in models}
     selected_model_id = str(config.get("local_selected_model_id", "") or "").strip()
 
     if selected_model_id not in model_ids:
         selected_model_id = ""
+
+    # 用户选过的模型优先于 Provider 的 default_id：后者只是「没选过」时的兜底，
+    # 两者混用会让顶栏显示与实际使用的模型对不上。
+    if selected_model_id:
+        default_model = selected_model_id
 
     return jsonify({
         "success": True,
@@ -1578,7 +1589,7 @@ def local_agent_config():
 
 
 def _local_agent_model_catalog() -> tuple[list[dict[str, Any]], str]:
-    """构建本地可用模型目录，并返回 Provider 设置里的默认模型。"""
+    """构建本地可用模型目录，并返回兜底默认模型（Provider 的 default_id）。"""
     from .Provider import get_default_provider
 
     models = []
