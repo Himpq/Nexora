@@ -3,7 +3,7 @@
  *
  * 职责:
  *   - 定义后端 context_injection 数据块的结构与解析(纯函数,无 DOM/Vue 依赖)
- *   - 构建卡片展开正文,显式展示本轮注入了哪些 volatile 块(名称 + 字符数)
+ *   - 构建卡片状态文案,展示本轮注入了哪些 volatile 块(名称 + 字符数)
  *
  * 协议(见 NexoraCode/model/turn_injection.py):
  *   type: context_injection
@@ -192,22 +192,5 @@ export function buildContextInjectionStatusText(step: ContextInjectionStep): str
     return parts.length > 0 ? parts.join(' · ') : '本轮无注入'
 }
 
-/** 卡片展开正文:head 恒定说明 + 每个 tail 注入块的变更行 */
-export function buildContextInjectionOutputText(step: ContextInjectionStep): string {
-    const lines: string[] = []
 
-    lines.push('head(system prompt)恒定不变,保证前缀缓存命中。')
-    lines.push(`head 字符数: ${step.head_chars.toLocaleString()}`)
-    lines.push('')
-    lines.push('本轮 tail 注入块(首轮全量,之后仅在有变更时注入 diff):')
-
-    step.blocks.forEach((block) => {
-        const modeLabel = block.mode === 'diff' ? 'diff' : '全量'
-        lines.push(`- ${injectionBlockLabel(block.name)}: ${block.chars.toLocaleString()} 字符 (${modeLabel})`)
-    })
-
-    lines.push('')
-    lines.push('无变更的轮次不注入;下方为与真正注入内容同源的变更行。')
-
-    return lines.join('\n').trim()
-}
+\n

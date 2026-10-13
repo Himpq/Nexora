@@ -3,7 +3,7 @@
 
     显式展示本轮注入的 tail volatile 块(项目约定 / 自定义提示词):
       - 徽标头:图标 + "Modified Injection" 名称 + 块摘要(可点击展开)
-      - 展开正文:head 恒定说明 + 每个注入块的变更行(+ / - 行,与知识库 diff 同源)
+      - 展开正文:每个注入块的变更行(+ / - 行,与知识库 diff 同源)
     设计契约(与 ChatDBServer 的 knowledge diff 通道同构):
       head 恒定(prefix cache 命中),volatile 块走 tail 每轮重发;
       rows 由后端按注入块正文提取,界面展示的 diff 与真正注入内容一致。
@@ -41,9 +41,7 @@
             </svg>
         </div>
 
-        <div v-if="outputText" class="ci-card-output">
-            <div class="ci-card-summary">{{ outputText }}</div>
-
+        <div v-if="step.blocks.length" class="ci-card-output">
             <div
                 v-for="block in step.blocks"
                 :key="block.name"
@@ -73,7 +71,6 @@
 
     import type { ContextInjectionStep } from '@/stream/contextInjection'
     import {
-        buildContextInjectionOutputText,
         buildContextInjectionStatusText,
         injectionBlockLabel,
     } from '@/stream/contextInjection'
@@ -87,12 +84,9 @@
     /** 状态文案:列出本轮注入的块名与字符数 */
     const statusText = computed(() => buildContextInjectionStatusText(props.step))
 
-    /** 展开正文(纯函数构建,保证流式/历史回放文案一致) */
-    const outputText = computed(() => buildContextInjectionOutputText(props.step))
-
     /** 点击徽标头切换展开 */
     function toggle(): void {
-        if (!outputText.value) {
+        if (!props.step.blocks.length) {
             return
         }
 
@@ -171,14 +165,6 @@
 
     .context-injection-card.expanded .ci-card-output {
         display: block;
-    }
-
-    /* 概要(恒定说明 + 块清单):等宽字体,与 diff 行区分 */
-    .ci-card-summary {
-        font-family: 'JetBrains Mono', monospace;
-        white-space: pre-wrap;
-        word-break: break-word;
-        overflow-wrap: anywhere;
     }
 
     /* 单个注入块:块头 + 变更行列表 */
