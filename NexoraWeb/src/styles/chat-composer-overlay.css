@@ -1,0 +1,35 @@
+/* 输入坞浮在普通聊天视口上；工具舞台继续使用自身的聊天面板布局。 */
+.gddp-chat-view {
+    --chat-composer-height: 0px;
+}
+
+#nexora-app .tool-stage-focus:not(.is-focused) .gddp-chat-view > .input-dock {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: var(--z-header);
+    pointer-events: none;
+}
+
+/* 视口延伸到页面底部，尾部留白保证最后一条消息可完整滚到输入框上方。 */
+#nexora-app .tool-stage-focus:not(.is-focused) .gddp-chat-view #messagesContainer {
+    margin-bottom: 0;
+    padding-bottom: calc(var(--chat-composer-height) + 24px);
+}
+
+#nexora-app .tool-stage-focus:not(.is-focused) .gddp-chat-view .chat-scroll-to-bottom {
+    bottom: calc(var(--chat-composer-height) + 24px);
+}
+
+/* 包装层按队列与多行输入的总高度排版，末尾空间才能覆盖完整输入坞。 */
+#nexora-app .tool-stage-focus:not(.is-focused) .gddp-chat-view #inputWrapper {
+    max-height: none;
+}
+
+/* 透明的外围区域交给消息区滚动，输入卡片和附件仍可正常操作。 */
+#nexora-app .tool-stage-focus:not(.is-focused) .gddp-chat-view > .input-dock .input-container,
+#nexora-app .tool-stage-focus:not(.is-focused) .gddp-chat-view > .input-dock .nc-message-queue,
+#nexora-app .tool-stage-focus:not(.is-focused) .gddp-chat-view > .input-dock .upload-preview-card {
+    pointer-events: auto;
+}

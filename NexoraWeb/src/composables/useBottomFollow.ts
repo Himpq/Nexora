@@ -11,17 +11,22 @@
  *   程序化滚动(scrollTop 赋值)触发的 scroll 事件同样进入判定,状态自洽。
  */
 
-import { ref } from 'vue'
+import { onBeforeUnmount, ref } from 'vue'
 import { CHAT_SCROLL_BOTTOM_THRESHOLD, isChatScrollLayoutReady } from '@/ui/chatScrollGeometry'
+import { ChatBottomScrollMotion } from '@/ui/chatBottomScrollMotion'
 
 export function useBottomFollow() {
     /** 是否跟随底部(用户上滑离开底部后为 false,回到底部附近恢复 true) */
     const following = ref(true)
+    const motion = new ChatBottomScrollMotion(
+        () => { following.value = true },
+        syncWithScroll,
+    )
 
     /** 依据容器当前滚动位置更新跟随状态(在 scroll 监听中调用) */
     function syncWithScroll(container: HTMLElement): void {
 
-        if (!isChatScrollLayoutReady(container)) {
+        if (motion.running || !isChatScrollLayoutReady(container)) {
             return
         }
 
@@ -32,6 +37,7 @@ export function useBottomFollow() {
 
     /** 恢复跟随并立即滚到底部(会话加载完成等场景) */
     function followNow(container: HTMLElement): void {
+        motion.stop()
         following.value = true
 
         if (isChatScrollLayoutReady(container)) {
@@ -39,20 +45,41 @@ export function useBottomFollow() {
         }
     }
 
+    /** 手动点击时平滑滚底；动画结束后恢复跟随，避免流式增量抢先跳到终点。 */
+    function followSmooth(container: HTMLElement): void {
+
+        if (!isChatScrollLayoutReady(container)) {
+            return
+        }
+
+        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+            followNow(container)
+            return
+        }
+
+        following.value = false
+        motion.start(container)
+    }
+
     /** 恢复跟随(发送/重答等需要回到最新消息的场景;实际滚动由消息变化监听执行) */
     function resume(): void {
+        motion.stop()
         following.value = true
     }
 
     /** 暂停跟随(轮次跳转/笔记跳转等主动离开底部的场景) */
     function suspend(): void {
+        motion.stop()
         following.value = false
     }
+
+    onBeforeUnmount(() => motion.stop())
 
     return {
         following,
         syncWithScroll,
         followNow,
+        followSmooth,
         resume,
         suspend,
     }

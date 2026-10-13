@@ -1024,10 +1024,22 @@
     /* 待发送附件条(复用全局 upload-preview-card 卡片式样式,对齐原版 filePreviewArea) */
     .input-attachments {
         display: flex;
+        width: fit-content;
+        max-width: calc(100% - 80px);
+        margin: 0 40px 0 auto;
+        box-sizing: border-box;
         flex-wrap: wrap;
         gap: 10px;
-        padding: 8px 12px;
-        border-bottom: 1px solid var(--color-border);
+        padding: 8px 0;
+        background: transparent;
+        border: 0;
+    }
+
+    @media (max-width: 980px) {
+        .input-attachments {
+            max-width: calc(100% - 32px);
+            margin-right: 16px;
+        }
     }
 
     /* ============ 行内工具芯片(上传/Thinking/Search) ============

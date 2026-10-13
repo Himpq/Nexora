@@ -3,7 +3,8 @@
 
     结构(与原版 chat.html 一致):
       .app-container > nav.sidebar + main.main-content
-        main > header.chat-header + #messagesContainer + .input-dock
+        main > header.chat-header + .gddp-view-stage
+          .gddp-chat-view > .chat-messages-viewport + .input-dock
 -->
 
 <template>
@@ -76,7 +77,11 @@
                                 <span>返回 Workspace</span>
                             </button>
                         </div>
-                        <div id="messagesContainer" class="messages-area" data-tool-stage-scroll>
+                        <ChatMessagesViewport
+                            :show-scroll-to-bottom="showScrollToBottom"
+                            :follow-bottom="followsChatBottom"
+                            @scroll-to-bottom="handleScrollToBottom"
+                        >
                             <!-- 切换会话加载中:显示加载占位,既不闪欢迎页也不残留旧内容 -->
                             <div v-if="conversationStore.messagesLoading" class="messages-loading">
                                 <span class="messages-loading-spinner" aria-hidden="true"></span>
@@ -128,7 +133,7 @@
                                     />
                                 </template>
                             </template>
-                        </div>
+                        </ChatMessagesViewport>
 
                         <!-- Turn Indicator(对齐原版:有对话轮次即显示,当前轮高亮) -->
                         <TurnIndicatorPanel
@@ -356,6 +361,7 @@
     import ChangesModal from '@/components/ChangesModal.vue'
     import RemoteConnectionModal from '@/components/RemoteConnectionModal.vue'
     import ChatInput from '@/components/ChatInput.vue'
+    import ChatMessagesViewport from '@/components/ChatMessagesViewport.vue'
     import ToolStageFocus from '@/components/ToolStageFocus.vue'
     import { useCurrentToolStageReply } from '@/stream/toolStageReply'
     import FileDetailView from '@/components/FileDetailView.vue'
@@ -472,10 +478,16 @@
         following: autoFollowBottom,
         syncWithScroll,
         followNow,
+        followSmooth,
         resume: resumeBottomFollow,
         suspend: suspendBottomFollow,
     } = useBottomFollow()
     const followsChatBottom = (): boolean => autoFollowBottom.value
+    const showScrollToBottom = computed(() => (
+        !autoFollowBottom.value
+        && !conversationStore.messagesLoading
+        && conversationStore.messages.length > 0
+    ))
 
     // 会话 ↔ URL ?cid= 双向同步:切换写 URL、后退/前进跟随(启动直达在 onMounted 中显式处理)
     useConversationUrlSync()
@@ -2796,6 +2808,15 @@
             restoreScrollAfterPrepend(container, prevScrollTop, prevScrollHeight)
 
             prepending.value = false
+        }
+    }
+
+    /** 平滑回到最新消息，动画完成后恢复流式输出的底部跟随。 */
+    function handleScrollToBottom(): void {
+        const container = document.getElementById('messagesContainer')
+
+        if (container) {
+            followSmooth(container)
         }
     }
 

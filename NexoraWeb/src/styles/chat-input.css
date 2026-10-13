@@ -144,6 +144,7 @@
 /* ---------------- 收起/展开:内容滑出归零,仅余 44px 圆钮 ---------------- */
 #nexora-app .input-dock {
     width: 100%;
+    background: transparent;
 }
 
 /* 收起完成:input-dock 保持自然高度(不清零),否则 0 高度 dock 会被挤出视口、按钮被裁掉;
