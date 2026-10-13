@@ -90,6 +90,7 @@ export type RenderItem =
 /** 子组件渲染所需的状态与方法(由 MessageItem 提供) */
 export interface MessageItemRenderContext {
     nexoracode: boolean
+    interactiveHtmlReady: boolean
     questionSubmitting: Record<number, boolean>
 
     isReasoningCollapsed: (segmentIndex: number) => boolean

@@ -309,6 +309,24 @@
         return parser;
     }
 
+    function escapeMarkdownHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+    }
+
+    function createRawHtmlEscapingRenderer(markedParser) {
+        if (typeof markedParser.Renderer !== 'function') {
+            throw new Error('chat_markdown.js marked parser missing Renderer');
+        }
+
+        const renderer = new markedParser.Renderer();
+        renderer.html = (html) => escapeMarkdownHtml(html);
+
+        return renderer;
+    }
+
     function renderMarkdownWithNewTabLinks(text, options = {}, deps = {}) {
         let raw = String(text || '');
         const opts = (options && typeof options === 'object') ? options : {};
@@ -363,10 +381,16 @@
         const protectedKnowledgeReferences = protectKnowledgeReferencesInMarkdown(withBareLatexWrapped);
         const protectedFileReferences = protectFileReferencesInMarkdown(protectedKnowledgeReferences.text);
         const shielded = protectMathSegmentsForMarkdown(protectedFileReferences.text);
-        const html = markedParser.parse(String(shielded.text || ''), {
+        const markdownOptions = {
             gfm: true,
             breaks: opts.breaks !== false,
-        });
+        };
+
+        if (opts.allowRawHtml === false) {
+            markdownOptions.renderer = createRawHtmlEscapingRenderer(markedParser);
+        }
+
+        const html = markedParser.parse(String(shielded.text || ''), markdownOptions);
         const restoredHtml = restoreMathSegmentsFromHtml(html, shielded.map);
         const restoredFileHtml = restoreFileReferencesInHtml(restoredHtml, protectedFileReferences.refs);
         const restoredKnowledgeHtml = restoreKnowledgeReferencesInHtml(restoredFileHtml, protectedKnowledgeReferences.refs);

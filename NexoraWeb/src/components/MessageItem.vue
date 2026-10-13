@@ -37,6 +37,7 @@
                 <div v-else-if="message.content" class="message-bubble">
                     <MarkdownView
                         :content="message.content"
+                        raw-html-mode="escape"
                         @knowledge-reference="handleKnowledgeReference"
                     />
                 </div>
@@ -738,6 +739,7 @@
      */
     provide(MESSAGE_ITEM_RENDER_KEY, {
         get nexoracode() { return !!props.nexoracode },
+        get interactiveHtmlReady() { return !props.streaming && !props.message.pending },
         get questionSubmitting() { return questionSubmitting.value },
         isReasoningCollapsed,
         isLiveReasoning,

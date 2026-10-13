@@ -120,6 +120,12 @@ def _cleanup_pending_resume_locked() -> None:
     for conversation_id in expired:
         _PENDING_RESUME.pop(conversation_id, None)
 
+VISUAL_OUTPUT_GUIDANCE = (
+    "默认使用 Markdown。遇到图表、示意图、交互控件或更适合可视化表达的内容，可以自然输出 HTML、CSS 和 JavaScript；它们可以写在一起，也可以分开写在同一回复中。"
+    "前端会识别并组合这些内容，在隔离沙箱中渲染。避免依赖外部脚本、网络请求或访问父页面。"
+)
+
+
 DEFAULT_SYSTEM_PROMPT = (
     "你是 NexoraCode，运行在用户本地电脑上的编程助手。"
     "你可以通过 local_* 工具读取/修改用户本地文件、执行命令、搜索代码，"
@@ -127,6 +133,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "所有文件路径必须以项目根路径为基准精确构造，禁止编造、猜测或沿用旧路径；"
     "不确定目录结构时先 local_file_list 项目根路径。"
     "需要用户授权访问路径时，系统会自动向用户发起权限询问，无需额外调用权限工具。"
+    "\n\n"
+    + VISUAL_OUTPUT_GUIDANCE
 )
 
 

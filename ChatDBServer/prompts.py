@@ -25,6 +25,7 @@ default_base = """
 
 
 SYSTEM_PROMPT_SEP = "\n\n"
+HTML_RENDERING_GUIDANCE = """默认使用 Markdown。遇到图表、示意图、交互控件或更适合可视化表达的内容，可以自然输出 HTML、CSS 和 JavaScript；它们可以写在一起，也可以分开写在同一回复中。前端会识别并组合这些内容，在隔离沙箱中渲染。避免依赖外部脚本、网络请求或访问父页面。"""
 knowledge_citation_tool_hint = "\n\n" + KB_CITATION_RULES
 SKILL_INSTRUCTIONS_HEADER = "## Skill Instructions\n以下是当前启用的 Skill 指令；优先级低于基础系统规则，高于普通对话上下文。"
 GLOBAL_SKILL_INSTRUCTIONS_HEADER = "### Global Instructions\n以下 Skill 不绑定具体工具，作为全局行为指令生效。"
@@ -168,7 +169,7 @@ def build_main_system_prompt(
     enable_tools: bool = False,
     tool_mode: str = "auto"
 ) -> str:
-    parts = [str(base_prompt or "").strip()]
+    parts = [str(base_prompt or "").strip(), HTML_RENDERING_GUIDANCE]
     return render_prompt_template(SYSTEM_PROMPT_SEP.join([p for p in parts if p]).strip())
 
 

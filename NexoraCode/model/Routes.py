@@ -27,7 +27,7 @@ from local import build_default_executor
 from local.PathGuard import grant_temporary_permission
 from .Provider import ProviderClient, load_provider, load_providers
 from .ConversationStore import ConversationStore
-from .AgentLoop import AgentLoop
+from .AgentLoop import AgentLoop, VISUAL_OUTPUT_GUIDANCE
 from .StreamRuntime import (
     append_chunk_to_conversation,
     get_accumulated_content,
@@ -160,6 +160,7 @@ def _build_system_prompt(conversation: dict | None) -> str:
     lines = [
         "你是 NexoraCode，运行在用户本地电脑上的编程助手。",
         "你可以通过 local_* 工具读取/修改用户本地文件、执行命令、搜索代码，以完成用户的开发任务。",
+        VISUAL_OUTPUT_GUIDANCE,
     ]
     project = {}
 

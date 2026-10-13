@@ -58,6 +58,8 @@
     <div v-else-if="item.kind === 'content'" class="content-body" :class="{ 'is-streaming-tail': ctx.isTailContent(item) }">
         <MarkdownView
             :content="item.segment.text"
+            raw-html-mode="interactive"
+            :interactive-html-ready="ctx.interactiveHtmlReady"
             @knowledge-reference="ctx.handleKnowledgeReference"
         />
         <span v-if="ctx.isTailContent(item)" class="stream-caret" aria-hidden="true"></span>

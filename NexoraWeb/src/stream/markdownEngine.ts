@@ -26,12 +26,24 @@ import {
     protectKnowledgeReferencesInMarkdown,
     restoreKnowledgeReferencesInHtml,
 } from './knowledgeReferences'
+import {
+    hasSandboxElements,
+    type InteractiveHtmlBlock,
+    type InteractiveHtmlPart,
+} from './interactiveHtmlSandbox'
 
 // 代码高亮主题不在此静态引入:入口页 index.html 声明 github(亮,常开)与
 // github-dark(暗,id=hljs-theme-dark)双 link,由 ui/theme.ts 按主题互斥启停。
 import 'katex/dist/katex.min.css'
 
 /** 流式节流间隔由消费方(MarkdownView)自理;本模块只负责"文本进、HTML 出" */
+
+export type RawHtmlRenderMode = 'sanitize' | 'escape' | 'interactive'
+
+export interface MarkdownRenderDocument {
+    html: string
+    interactiveBlocks: InteractiveHtmlBlock[]
+}
 
 /** 防重注册标志(挂在 marked 全局单例上) */
 const PIPELINE_READY_FLAG = '__nexoraMarkdownPipelineReady__'
@@ -49,6 +61,10 @@ const HIGHLIGHT_LANG_WHITELIST = new Set([
     'py', 'python', 'bash', 'shell', 'sh', 'css', 'less', 'scss',
     'html', 'xml', 'sql', 'java', 'c', 'cpp', 'go', 'rust', 'php', 'yaml', 'yml',
 ])
+
+const INTERACTIVE_HTML_LANGUAGES = new Set(['html', 'htm', 'xhtml', 'svg'])
+const INTERACTIVE_STYLE_LANGUAGES = new Set(['css'])
+const INTERACTIVE_SCRIPT_LANGUAGES = new Set(['js', 'javascript', 'mjs', 'ecmascript'])
 
 /** 超长代码跳过高亮(解析成本失控保护) */
 const HIGHLIGHT_MAX_CODE_LENGTH = 100_000
@@ -401,16 +417,212 @@ function normalizeMarkdownForRendering(source: string): string {
     return out.join('\n')
 }
 
-/** 渲染入口:Markdown 源文本 → 可安全注入 v-html 的 HTML(管线级单次注册保证) */
-export function renderMarkdownHtml(source: string): string {
+
+interface InteractiveHtmlAnalysis {
+    enabled: boolean
+    codePartsByRaw: Map<string, Array<InteractiveHtmlPart | null>>
+}
+
+/** 扫描整条助手回复，识别分开的 HTML、CSS 和 JavaScript 片段。 */
+function analyzeInteractiveHtml(source: string): InteractiveHtmlAnalysis {
+    const tokens = marked.lexer(source, { gfm: true, breaks: true })
+    const codePartsByRaw = new Map<string, Array<InteractiveHtmlPart | null>>()
+    let hasHtmlFence = false
+    let hasRawHtml = false
+    let hasRawSandboxElement = false
+    let hasSeparateStyleOrScript = false
+
+    marked.walkTokens(tokens, (token) => {
+        if (token.type === 'code') {
+            const language = getCodeLanguage(token.lang)
+            const part = classifyInteractiveCode(language, token.text)
+            const parts = codePartsByRaw.get(token.raw) || []
+
+            parts.push(part)
+            codePartsByRaw.set(token.raw, parts)
+
+            if (part?.kind === 'markup') {
+                hasHtmlFence = true
+            }
+
+            if (part?.kind === 'style' || part?.kind === 'script') {
+                hasSeparateStyleOrScript = true
+            }
+
+            return
+        }
+
+        if (token.type === 'html' && token.block) {
+            hasRawHtml = true
+
+            if (hasSandboxElements(token.text)) {
+                hasRawSandboxElement = true
+            }
+        }
+    })
+
+    return {
+        enabled: hasHtmlFence || (hasRawHtml && (hasRawSandboxElement || hasSeparateStyleOrScript)),
+        codePartsByRaw,
+    }
+}
+
+function getCodeLanguage(language: string | null | undefined): string {
+    return String(language || '').trim().split(/\s+/, 1)[0].toLowerCase()
+}
+
+function takeInteractiveCodePart(
+    token: { raw: string; text: string },
+    codePartsByRaw: Map<string, Array<InteractiveHtmlPart | null>>,
+): InteractiveHtmlPart | null {
+    const parts = codePartsByRaw.get(token.raw)
+
+    if (!parts?.length) {
+        return null
+    }
+
+    return parts.shift() || null
+}
+
+/** 按语言标签或语法特征识别 HTML、CSS 和 JavaScript。 */
+function classifyInteractiveCode(language: string, source: string): InteractiveHtmlPart | null {
+    if (INTERACTIVE_HTML_LANGUAGES.has(language)) {
+        return { kind: 'markup', source }
+    }
+
+    if (INTERACTIVE_STYLE_LANGUAGES.has(language)) {
+        return { kind: 'style', source }
+    }
+
+    if (INTERACTIVE_SCRIPT_LANGUAGES.has(language)) {
+        return { kind: 'script', source, module: language === 'mjs' }
+    }
+
+    if (!['', 'text', 'plaintext', 'txt', 'plain'].includes(language)) {
+        return null
+    }
+
+    if (/^\s*(?:<!doctype\b|<(?:html|head|body|main|section|article|div|svg|canvas|form|input|button|table|ul|ol|h[1-6]|p|style|script)\b)/i.test(source)) {
+        return { kind: 'markup', source }
+    }
+
+    if (looksLikeCss(source)) {
+        return { kind: 'style', source }
+    }
+
+    if (looksLikeJavaScript(source)) {
+        return { kind: 'script', source, module: false }
+    }
+
+    return null
+}
+
+function looksLikeCss(source: string): boolean {
+    const rules = source.matchAll(/(?:^|\n)\s*([^{}\n]+)\s*\{([^{}]*)\}/g)
+
+    for (const rule of rules) {
+        const selector = rule[1]
+        const declarations = rule[2]
+
+        if (/\b(?:const|let|var|function|if|for|while|return)\b|=>/.test(selector)) {
+            continue
+        }
+
+        if (/(?:^|;)\s*(?:--[\w-]+|[-a-z]+)\s*:\s*[^;{}]+/i.test(declarations)) {
+            return true
+        }
+    }
+
+    return false
+}
+
+function looksLikeJavaScript(source: string): boolean {
+    return /\b(?:const|let|var|function|return|document|window|globalThis|addEventListener|querySelector|getElementById|requestAnimationFrame|setInterval|setTimeout|canvas|getContext|textContent|innerHTML)\b|=>|\.value\b/m.test(source)
+}
+
+/** 按消息用途渲染 Markdown，并将助手回复中的交互片段装入沙箱。 */
+function renderMarkdownSource(
+    source: string,
+    rawHtmlMode: RawHtmlRenderMode,
+    interactiveBlocks: InteractiveHtmlBlock[],
+): string {
     ensurePipeline()
 
     const protectedReferences = protectKnowledgeReferencesInMarkdown(source)
     const normalized = normalizeMarkdownForRendering(protectedReferences.text)
 
     const withMath = renderInlineMath(renderBlockMath(normalized))
+    const interactiveAnalysis = rawHtmlMode === 'interactive'
+        ? analyzeInteractiveHtml(withMath)
+        : null
+    const interactiveParts: InteractiveHtmlPart[] = []
+    const interactiveIndex = interactiveBlocks.length
+    let hasInteractivePlaceholder = false
 
-    const raw = marked.parse(withMath, { gfm: true, breaks: true }) as string
+    const renderer = new marked.Renderer()
+    const defaultCodeRenderer = marked.defaults.renderer?.code
+
+    if (!defaultCodeRenderer) {
+        throw new Error('Marked highlight code renderer is not registered')
+    }
+
+    const collectInteractivePart = (part: InteractiveHtmlPart): string => {
+        interactiveParts.push(part)
+
+        if (hasInteractivePlaceholder) {
+            return ''
+        }
+
+        hasInteractivePlaceholder = true
+        interactiveBlocks.push({ index: interactiveIndex, parts: interactiveParts })
+
+        return '<div class="nexora-interactive-html-placeholder" data-nexora-interactive-index="'
+            + interactiveIndex + '"></div>'
+    }
+
+    renderer.html = (token) => {
+        if (rawHtmlMode === 'escape') {
+            return escapeCodeText(token.text)
+        }
+
+        if (interactiveAnalysis?.enabled && token.block) {
+            return collectInteractivePart({ kind: 'markup', source: token.text })
+        }
+
+        return token.text
+    }
+
+    renderer.code = (token) => {
+        if (interactiveAnalysis?.enabled) {
+            const part = takeInteractiveCodePart(token, interactiveAnalysis.codePartsByRaw)
+
+            if (part) {
+                return collectInteractivePart(part)
+            }
+        }
+
+        return defaultCodeRenderer.call(renderer, token)
+    }
+
+    const raw = marked.parse(withMath, { gfm: true, breaks: true, renderer }) as string
 
     return restoreKnowledgeReferencesInHtml(sanitizeHtml(raw), protectedReferences.references)
+}
+
+/** 渲染入口:Markdown 源文本 → 安全 HTML 与待沙箱挂载的交互块。 */
+export function renderMarkdownDocument(
+    source: string,
+    rawHtmlMode: RawHtmlRenderMode = 'sanitize',
+): MarkdownRenderDocument {
+    const interactiveBlocks: InteractiveHtmlBlock[] = []
+
+    return {
+        html: renderMarkdownSource(source, rawHtmlMode, interactiveBlocks),
+        interactiveBlocks,
+    }
+}
+
+/** 兼容既有调用方:默认只清洗 HTML，不挂载交互脚本。 */
+export function renderMarkdownHtml(source: string): string {
+    return renderMarkdownDocument(source).html
 }

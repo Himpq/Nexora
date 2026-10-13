@@ -246,7 +246,9 @@
                 if (textContent) {
                     const bubble = document.createElement('div');
                     bubble.className = 'message-bubble';
-                    bubble.innerHTML = renderMarkdownWithNewTabLinks(textContent);
+                    bubble.innerHTML = renderMarkdownWithNewTabLinks(textContent, {
+                        allowRawHtml: false,
+                    });
                     bindSourceMarkdown(bubble, textContent);
                     renderMathSafe(bubble);
                     content.appendChild(bubble);

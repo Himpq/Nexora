@@ -1,0 +1,17 @@
+#nexora-app .markdown-body .nexora-interactive-html-frame {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    height: 0;
+    overflow: hidden;
+    visibility: hidden;
+    margin: 12px auto;
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+    background: var(--color-bg-elevated);
+}
+
+#nexora-app .markdown-body .nexora-interactive-html-frame[data-height-ready='true'] {
+    visibility: visible;
+}

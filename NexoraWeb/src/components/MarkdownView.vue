@@ -13,17 +13,26 @@
 -->
 
 <script setup lang="ts">
-    import { computed, onBeforeUnmount, ref, watch } from 'vue'
+    import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-    import { renderMarkdownHtml } from '@/stream/markdownEngine'
+    import {
+        renderMarkdownDocument,
+        type RawHtmlRenderMode,
+    } from '@/stream/markdownEngine'
+    import { mountInteractiveHtmlBlocks } from '@/stream/interactiveHtmlSandbox'
     import type { KnowledgeReference } from '@/stream/knowledgeReferences'
 
     /** 流式节流间隔(ms):该周期内的多次增量合并为一次解析 */
     const RENDER_THROTTLE_MS = 120
 
-    const props = defineProps<{
+    const props = withDefaults(defineProps<{
         content: string
-    }>()
+        rawHtmlMode?: RawHtmlRenderMode
+        interactiveHtmlReady?: boolean
+    }>(), {
+        rawHtmlMode: 'sanitize',
+        interactiveHtmlReady: false,
+    })
 
     const emit = defineEmits<{
         'knowledge-reference': [reference: KnowledgeReference]
@@ -31,6 +40,7 @@
 
     /** 实际参与渲染的内容(节流缓冲区) */
     const displayContent = ref(props.content || '')
+    const markdownRoot = ref<HTMLElement | null>(null)
 
     let throttleTimer: number | null = null
     let lastRenderAt = 0
@@ -82,7 +92,19 @@
         }
     })
 
-    const renderedHtml = computed(() => renderMarkdownHtml(displayContent.value))
+    const renderedDocument = computed(() => renderMarkdownDocument(displayContent.value, props.rawHtmlMode))
+
+    function mountCompletedInteractiveHtml(): void {
+        if (!props.interactiveHtmlReady || !markdownRoot.value) {
+            return
+        }
+
+        mountInteractiveHtmlBlocks(markdownRoot.value, renderedDocument.value.interactiveBlocks)
+    }
+
+    watch([renderedDocument, () => props.interactiveHtmlReady], mountCompletedInteractiveHtml, { flush: 'post' })
+
+    onMounted(mountCompletedInteractiveHtml)
 
     /** v-html 内的知识来源按钮通过事件代理交给外层聊天视图处理。 */
     function handleMarkdownClick(event: MouseEvent): void {
@@ -110,7 +132,7 @@
 </script>
 
 <template>
-    <div class="markdown-body" v-html="renderedHtml" @click="handleMarkdownClick"></div>
+    <div ref="markdownRoot" class="markdown-body" v-html="renderedDocument.html" @click="handleMarkdownClick"></div>
 </template>
 
 <style scoped>
@@ -118,6 +140,14 @@
         line-height: 1.7;
         word-break: break-word;
         font-size: 14px;
+        text-align: center;
+    }
+
+    /* Center constrained top-level content while preserving its own text alignment. */
+    .markdown-body > :deep(*) {
+        margin-left: auto !important;
+        margin-right: auto !important;
+        text-align: initial;
     }
 
     .markdown-body :deep(p) {
@@ -180,4 +210,5 @@
     .markdown-body :deep(img) {
         max-width: 100%;
     }
+
 </style>
