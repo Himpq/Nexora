@@ -28,6 +28,7 @@ import requests
 
 from core.config import config, get_app_root
 from .RetrySettings import DEFAULT_ERROR_RETRY_COUNT, configured_retry_count
+from .TokenEstimator import TokenEstimator
 from .ThinkingProtocol import apply_thinking_protocol, normalize_thinking_protocol
 
 
@@ -546,6 +547,27 @@ class ProviderClient:
 
         return headers
 
+    @staticmethod
+    def _build_continuation_messages(messages: list[dict], partial_content: str) -> list[dict]:
+        """保留原请求前缀，并把已输出正文作为续写上下文追加。"""
+        retry_messages = list(messages)
+
+        if partial_content:
+            retry_messages.extend(
+                [
+                    {"role": "assistant", "content": partial_content},
+                    {
+                        "role": "user",
+                        "content": (
+                            "上一条 assistant 回复因连接中断而未完成。请从它最后一个字符之后继续完成原任务，"
+                            "不要重复、改写或总结已经输出的内容。如果需要，可以继续调用工具。只输出尚未完成的部分。"
+                        ),
+                    },
+                ]
+            )
+
+        return retry_messages
+
     def stream_chat(
         self,
         messages: list[dict],
@@ -554,12 +576,14 @@ class ProviderClient:
         max_tokens: Optional[int] = None,
         enable_thinking: bool | None = None,
     ) -> Generator[dict, None, None]:
+        """流式发送请求；断流后携带已输出正文续写，并只交付完整尝试的工具元数据。"""
         if not self.config.is_configured():
             raise ProviderError("Provider 未配置：请先在设置中填写 base_url / model")
 
+        base_messages = list(messages)
         payload: dict[str, Any] = {
             "model": self.config.model,
-            "messages": messages,
+            "messages": base_messages,
             "stream": True,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens if max_tokens is None else max_tokens,
@@ -581,54 +605,87 @@ class ProviderClient:
             DEFAULT_ERROR_RETRY_COUNT,
         )
         retry_index = 0
+        partial_content_parts: list[str] = []
+        base_input_token_count: int | None = None
+        base_output_token_limit = int(payload["max_tokens"])
 
         while True:
-            # 在正文或思考开始前暂存 usage/tool-call 元数据；若连接此时失败，
-            # 本次尝试的数据不会污染调用方，重试后只交付成功尝试的事件。
-            buffered_events = []
-            visible_output_started = False
+            partial_content = "".join(partial_content_parts)
+            retry_payload = dict(payload)
+            retry_payload["messages"] = self._build_continuation_messages(base_messages, partial_content)
 
-            try:
-                for event in self._stream_chat_once(payload):
-                    event_type = str(event.get("type") or "")
-                    has_visible_delta = (
-                        event_type in {"content", "reasoning_content"}
-                        and bool(str(event.get("delta") or ""))
+            if partial_content:
+                if base_input_token_count is None:
+                    base_input_token_count = TokenEstimator.count(
+                        {"messages": base_messages, "tools": tools or []}
                     )
 
-                    if visible_output_started:
+                retry_input_token_count = TokenEstimator.count(
+                    {"messages": retry_payload["messages"], "tools": tools or []}
+                )
+                added_input_tokens = max(0, retry_input_token_count - base_input_token_count)
+                remaining_output_tokens = base_output_token_limit - added_input_tokens
+
+                if remaining_output_tokens <= 0:
+                    raise ProviderError(
+                        "已输出内容占满本次请求预算，无法安全续写；请重新发送原请求。"
+                    )
+
+                retry_payload["max_tokens"] = remaining_output_tokens
+
+            # 工具调用、finish 和 usage 只在一次流完整结束后交付，避免断流重试时
+            # 把不完整的工具参数或失败尝试的 usage 混入最终响应。
+            deferred_events: list[dict] = []
+            visible_output_started = False
+            attempt_content_parts: list[str] = []
+
+            try:
+                for event in self._stream_chat_once(retry_payload):
+                    event_type = str(event.get("type") or "")
+
+                    if event_type == "content":
+                        delta = str(event.get("delta") or "")
+
+                        if delta:
+                            visible_output_started = True
+                            attempt_content_parts.append(delta)
+
                         yield event
                         continue
 
-                    if has_visible_delta:
-                        visible_output_started = True
+                    if event_type == "reasoning_content":
+                        if str(event.get("delta") or ""):
+                            visible_output_started = True
 
-                        for buffered_event in buffered_events:
-                            yield buffered_event
-
-                        buffered_events.clear()
                         yield event
                         continue
 
-                    buffered_events.append(event)
+                    if event_type in {"tool_call", "usage", "finish"}:
+                        deferred_events.append(event)
+                        continue
 
-                for buffered_event in buffered_events:
-                    yield buffered_event
-
-                return
+                    yield event
             except Exception as exc:
-                if self._cancel_event.is_set() or visible_output_started or retry_index >= retry_limit:
+                if any(event.get("type") == "finish" for event in deferred_events):
+                    for deferred_event in deferred_events:
+                        yield deferred_event
+
+                    return
+
+                if self._cancel_event.is_set() or retry_index >= retry_limit:
                     raise
 
+                partial_content_parts.extend(attempt_content_parts)
                 retry_index += 1
                 delay_seconds = min(0.25 * (2 ** (retry_index - 1)), 1.0)
                 print(
                     f"[LocalProvider] auto_retry provider={self.config.name} model={self.config.model} "
                     f"retry={retry_index}/{retry_limit} wait={delay_seconds:.2f}s "
+                    f"visible_output={int(visible_output_started)} "
+                    f"continuation_chars={sum(len(part) for part in partial_content_parts)} "
                     f"error={type(exc).__name__}: {str(exc)[:240]}"
                 )
 
-                # 重试发生在正文/思考开始前，此时还没有可见输出，前端只有控制台日志。
                 # 显式推一条事件，让用户看到"正在重试"而不是干等。
                 yield {
                     "type": "auto_retry",
@@ -641,19 +698,60 @@ class ProviderClient:
                 if self._cancel_event.wait(delay_seconds):
                     raise
 
+                continue
+
+            for deferred_event in deferred_events:
+                yield deferred_event
+
+            return
+
+    def _post_interruptible(self, url: str, *, headers: dict, json_body: dict) -> requests.Response:
+        """发起上游请求，但可被 cancel() 立即打断。
+
+        requests 的同步 post 在连接/等待响应头阶段无法响应取消：用户点了停止，
+        线程仍要等满 timeout（默认 120s）才返回。这里把 post 放到后台线程执行，
+        主线程按短间隔轮询取消事件；一旦取消就立即抛错，不等 post 自然结束。
+        后台线程为 daemon，连接最终失败/成功都不影响主流程退出。
+        """
+        result: dict[str, Any] = {}
+
+        def _do_post() -> None:
+            try:
+                result["response"] = self._session.post(
+                    url,
+                    headers=headers,
+                    json=json_body,
+                    timeout=self.config.timeout_seconds,
+                    stream=True,
+                    allow_redirects=False,
+                )
+            except Exception as exc:  # noqa: BLE001 - 原样带回主线程再包装
+                result["error"] = exc
+
+        worker = threading.Thread(target=_do_post, name="nc-provider-connect", daemon=True)
+        worker.start()
+
+        while worker.is_alive():
+            if self._cancel_event.is_set():
+                raise ProviderError("__STREAM_CANCELLED__")
+
+            worker.join(timeout=0.1)
+
+        if self._cancel_event.is_set():
+            raise ProviderError("__STREAM_CANCELLED__")
+
+        if "error" in result:
+            raise ProviderError(f"Provider 请求失败: {result['error']}") from result["error"]
+
+        return result["response"]
+
     def _stream_chat_once(self, payload: dict[str, Any]) -> Generator[dict, None, None]:
         """执行一次上游流请求；重试与半截输出保护由 stream_chat 统一处理。"""
-        try:
-            upstream = self._session.post(
-                self._completions_url(),
-                headers=self._headers(),
-                json=payload,
-                timeout=self.config.timeout_seconds,
-                stream=True,
-                allow_redirects=False,
-            )
-        except Exception as exc:
-            raise ProviderError(f"Provider 请求失败: {exc}") from exc
+        upstream = self._post_interruptible(
+            self._completions_url(),
+            headers=self._headers(),
+            json_body=payload,
+        )
 
         status_code = int(upstream.status_code or 0)
 
