@@ -191,6 +191,3 @@ export function buildContextInjectionStatusText(step: ContextInjectionStep): str
 
     return parts.length > 0 ? parts.join(' · ') : '本轮无注入'
 }
-
-
-\n
