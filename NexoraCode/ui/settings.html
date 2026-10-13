@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/settings.css?v=20261010_integrated_settings_01"/>
     <link rel="stylesheet" href="/settings-controls.css?v=20261010_integrated_settings_01"/>
     <link rel="stylesheet" href="/settings-sections.css?v=20261010_integrated_settings_01"/>
+    <link rel="stylesheet" href="/github-project-settings.css?v=20261012_github_project_01"/>
     <link rel="stylesheet" href="/permissions-settings.css?v=20261010_integrated_settings_01"/>
     <link rel="stylesheet" href="/plugins-settings.css"/>
     <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css"/>
@@ -313,21 +314,77 @@
                 <p id="remote-status" role="status" class="sub"></p>
             </section>
 
-            <section id="view-about" class="view">
-                <h1>关于</h1>
-                <p class="sub">NexoraCode — 运行在用户本地的编程助手。</p>
-                <ul class="about-list">
-                    <li>对话在本地运行，只调用你配置的模型服务商。</li>
-                    <li>文件、终端、搜索等工具直接在本机执行。</li>
-                    <li>会话全部存储在本地，路径访问遵循本地授权。</li>
-                </ul>
-            </section>
-
             <section id="view-plugins" class="view">
                 <h1>插件</h1>
                 <p class="sub">把插件目录放到 NexoraCode/plugins/，在这里查看、启用和配置。插件代码会在本机运行，请只启用可信来源的插件；远程 Agent 只能调用显式开放的只读插件工具，启停变更需要重启生效。</p>
                 <div id="plugin-list" class="plugin-list" aria-live="polite">正在读取插件…</div>
             </section>
+
+            <section id="view-about" class="view">
+                <h1>关于 NexoraCode</h1>
+                <p class="sub">查看 Nexora 在 GitHub 上的项目介绍、仓库统计和主要语言占比。</p>
+
+                <div class="github-project-card" aria-label="Nexora GitHub 仓库概览">
+                    <div class="github-project-header">
+                        <div class="github-project-copy">
+                            <a
+                                class="github-project-name"
+                                href="https://github.com/Himpq/Nexora"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                            ><span>Himpq/</span><strong>Nexora</strong></a>
+                            <p id="github-project-description" class="github-project-description">正在从 GitHub 读取仓库简介…</p>
+                        </div>
+                        <img
+                            id="github-owner-avatar"
+                            class="github-owner-avatar"
+                            alt="Himpq 的 GitHub 头像"
+                            width="82"
+                            height="82"
+                            referrerpolicy="no-referrer"
+                        />
+                    </div>
+
+                    <div class="github-project-stats" aria-label="仓库统计">
+                        <div class="github-project-stat">
+                            <i class="fa-solid fa-users" aria-hidden="true"></i>
+                            <strong id="github-contributors-count">—</strong>
+                            <span>Contributors</span>
+                        </div>
+                        <div class="github-project-stat">
+                            <i class="fa-regular fa-circle-dot" aria-hidden="true"></i>
+                            <strong id="github-issues-count">—</strong>
+                            <span>Issues</span>
+                        </div>
+                        <div class="github-project-stat">
+                            <i class="fa-regular fa-star" aria-hidden="true"></i>
+                            <strong id="github-stars-count">—</strong>
+                            <span>Stars</span>
+                        </div>
+                        <div class="github-project-stat">
+                            <i class="fa-solid fa-code-fork" aria-hidden="true"></i>
+                            <strong id="github-forks-count">—</strong>
+                            <span>Forks</span>
+                        </div>
+                        <a
+                            class="github-project-mark"
+                            href="https://github.com/Himpq/Nexora"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            aria-label="在 GitHub 打开 Himpq/Nexora"
+                            title="在 GitHub 打开"
+                        ><i class="fa-brands fa-github" aria-hidden="true"></i></a>
+                    </div>
+
+                    <div id="github-language-bar" class="github-language-bar" role="img" aria-label="仓库语言占比"></div>
+                </div>
+
+                <ul class="about-list">
+                    <li>可拓展的本地编程助手。</li>
+                    <li>会话全部存储在本地，路径访问遵循本地授权。</li>
+                </ul>
+            </section>
+
         </main>
 
         <div class="bar">
@@ -340,5 +397,6 @@
     <script src="/permissions-settings.js?v=20261010_integrated_settings_01"></script>
     <script src="/remote-settings.js"></script>
     <script src="/plugins-settings.js"></script>
+    <script src="/github-project-settings.js?v=20261012_github_project_01"></script>
 </body>
 </html>

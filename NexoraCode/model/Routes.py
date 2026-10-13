@@ -91,6 +91,23 @@ def local_permissions_settings_js():
     return send_file(get_bundle_root() / "ui" / "permissions-settings.js", mimetype="application/javascript")
 
 
+@_local_bp.route("/github-project-settings.css", methods=["GET"])
+@_local_bp.route("/github-project-settings.js", methods=["GET"])
+def local_github_project_asset():
+    """提供 GitHub 项目概览使用的独立脚本和样式。"""
+    filename = request.path.rsplit("/", 1)[-1]
+    asset_types = {
+        "github-project-settings.css": "text/css",
+        "github-project-settings.js": "application/javascript",
+    }
+    mimetype = asset_types.get(filename)
+
+    if mimetype is None:
+        return Response(status=404)
+
+    return send_file(get_bundle_root() / "ui" / filename, mimetype=mimetype)
+
+
 def set_default_executor(executor) -> None:
     """注入全局工具执行器，避免每次对话重建线程池。"""
     global _EXECUTOR
