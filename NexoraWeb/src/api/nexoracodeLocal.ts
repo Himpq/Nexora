@@ -150,6 +150,21 @@ export async function fetchLocalToolAutoExpand(): Promise<boolean> {
     return data.general.tool_auto_expand
 }
 
+/** 保存新会话使用的全局默认模型。 */
+export async function saveLocalDefaultModel(modelId: string): Promise<void> {
+    const data = await apiFetch<{ success: boolean; message?: string }>(
+        '/api/local/default-model',
+        {
+            method: 'POST',
+            body: JSON.stringify({ model_id: modelId }),
+        },
+    )
+
+    if (!data.success) {
+        throw new Error(data.message || '保存默认模型失败')
+    }
+}
+
 export async function saveLocalPermissionSettings(
     mode: LocalPermissionMode,
     approvalModelId: string,

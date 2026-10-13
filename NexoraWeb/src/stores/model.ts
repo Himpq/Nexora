@@ -4,13 +4,18 @@
  * 职责:
  *   - 模型目录 / 当前选中模型
  *   - /api/config 结果 localStorage 缓存(避免每次进入都拉取,对齐原版行为)
- *   - 选中模型持久化到 localStorage(模型使用历史缓存)
+ *   - 本地 Code 的新会话默认模型由后端持久化, localStorage 仅作兼容缓存
  */
 
 import { defineStore } from 'pinia'
 
 import { fetchAppConfig, normalizeModelItems, type AppConfig, type ModelItem } from '@/api/config'
-import { fetchLocalConversationSettings, saveLocalConversationSettings } from '@/api/nexoracodeLocal'
+import {
+    fetchLocalConversationSettings,
+    saveLocalConversationSettings,
+    saveLocalDefaultModel,
+} from '@/api/nexoracodeLocal'
+import { showError } from '@/stores/notify'
 
 const IS_NEXORACODE = import.meta.env.MODE === 'nexoracode'
 
@@ -22,6 +27,8 @@ const CONFIG_CACHE_KEY = IS_NEXORACODE ? 'nexoracode.config' : 'nexora.config'
 
 /** config 缓存有效期(5 分钟) */
 const CONFIG_CACHE_TTL = 5 * 60 * 1000
+
+let defaultModelSaveQueue: Promise<void> = Promise.resolve()
 
 interface ConfigCacheEntry {
     data: AppConfig
@@ -83,6 +90,14 @@ function writeConfigCache(data: AppConfig): void {
     }
 }
 
+/** 按用户选择顺序写默认模型，避免快速连续切换时旧请求最后落盘。 */
+function persistLocalDefaultModel(modelId: string): Promise<void> {
+    const pending = defaultModelSaveQueue.then(() => saveLocalDefaultModel(modelId))
+    defaultModelSaveQueue = pending.catch(() => undefined)
+
+    return pending
+}
+
 export const useModelStore = defineStore('model', {
     state: (): ModelState => ({
         models: [],
@@ -109,7 +124,7 @@ export const useModelStore = defineStore('model', {
                     const cached = readConfigCache()
 
                     if (cached && Array.isArray(cached.models) && cached.models.length > 0) {
-                        this.applyConfig(cached)
+                        await this.applyConfig(cached)
 
                         return
                     }
@@ -119,14 +134,14 @@ export const useModelStore = defineStore('model', {
 
                 writeConfigCache(config)
 
-                this.applyConfig(config)
+                await this.applyConfig(config)
             } finally {
                 this.loading = false
             }
         },
 
         /** 应用 config:填充模型目录并恢复选中模型 */
-        applyConfig(config: AppConfig): void {
+        async applyConfig(config: AppConfig): Promise<void> {
             this.models = normalizeModelItems(config.models)
 
             // 有活动会话时，selectedId 由 setActiveConversation 按会话设置决定，
@@ -135,10 +150,28 @@ export const useModelStore = defineStore('model', {
                 return
             }
 
+            const persisted = IS_NEXORACODE ? String(config.local_selected_model_id || '').trim() : ''
+
+            if (persisted && this.models.some((item) => item.id === persisted)) {
+                this.selectedId = persisted
+                localStorage.setItem(SELECTED_MODEL_KEY, persisted)
+
+                return
+            }
+
             const cached = localStorage.getItem(SELECTED_MODEL_KEY)
 
             if (cached && this.models.some((item) => item.id === cached)) {
                 this.selectedId = cached
+
+                if (IS_NEXORACODE) {
+                    try {
+                        await persistLocalDefaultModel(cached)
+                        writeConfigCache({ ...config, local_selected_model_id: cached })
+                    } catch (error) {
+                        showError(error instanceof Error ? error.message : '保存默认模型失败')
+                    }
+                }
 
                 return
             }
@@ -166,12 +199,11 @@ export const useModelStore = defineStore('model', {
          * 有当前会话时写该会话的独立设置（只影响本会话）；没有会话时更新全局默认
          * （作为之后新建会话的初值）。
          */
-        selectModel(modelId: string): void {
-            this.selectedId = modelId
-
+        async selectModel(modelId: string): Promise<void> {
             const conversationId = IS_NEXORACODE ? String(this.activeConversationId || '').trim() : ''
 
             if (conversationId) {
+                this.selectedId = modelId
                 this.conversationModels[conversationId] = modelId
                 // 落盘到会话设置；失败不影响界面（下次进入会话会以服务端为准）。
                 void saveLocalConversationSettings(conversationId, { model_name: modelId }).catch(() => {
@@ -181,7 +213,24 @@ export const useModelStore = defineStore('model', {
                 return
             }
 
+            this.selectedId = modelId
             localStorage.setItem(SELECTED_MODEL_KEY, modelId)
+
+            if (IS_NEXORACODE) {
+                try {
+                    await persistLocalDefaultModel(modelId)
+                } catch (error) {
+                    showError(error instanceof Error ? error.message : '保存默认模型失败')
+
+                    return
+                }
+
+                const cachedConfig = readConfigCache()
+
+                if (cachedConfig) {
+                    writeConfigCache({ ...cachedConfig, local_selected_model_id: modelId })
+                }
+            }
         },
 
         /**

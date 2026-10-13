@@ -48,6 +48,7 @@ _DEFAULTS = {
     "shell_whitelist": [],
     "local_tool_permission_mode": "confirm",
     "local_tool_approval_model_id": "",
+    "local_selected_model_id": "",
     "local_custom_system_prompt": "",
     "local_read_agents_md": True,
     "local_agent": True,

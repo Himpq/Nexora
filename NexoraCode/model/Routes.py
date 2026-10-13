@@ -1544,12 +1544,29 @@ def local_agent_user_info():
 @_local_bp.route("/api/config", methods=["GET"])
 def local_agent_config():
     """模型列表：本地 Provider 列表展开为 chat.js 期望的数组格式。"""
-    from .Provider import get_default_provider, load_providers
+    models, default_model = _local_agent_model_catalog()
+    model_ids = {model["id"] for model in models}
+    selected_model_id = str(config.get("local_selected_model_id", "") or "").strip()
 
-    providers = load_providers()
+    if selected_model_id not in model_ids:
+        selected_model_id = ""
+
+    return jsonify({
+        "success": True,
+        "models": models,
+        "providers": {},
+        "default_model": default_model,
+        "local_selected_model_id": selected_model_id,
+    })
+
+
+def _local_agent_model_catalog() -> tuple[list[dict[str, Any]], str]:
+    """构建本地可用模型目录，并返回 Provider 设置里的默认模型。"""
+    from .Provider import get_default_provider
+
     models = []
 
-    for provider in providers:
+    for provider in load_providers():
         if not provider.is_configured():
             continue
 
@@ -1565,12 +1582,27 @@ def local_agent_config():
     default = get_default_provider()
     default_model = f"{default.provider_id}/{default.model}" if default.is_configured() else ""
 
-    return jsonify({
-        "success": True,
-        "models": models,
-        "providers": {},
-        "default_model": default_model,
-    })
+    return models, default_model
+
+
+@_local_bp.route("/api/local/default-model", methods=["POST"])
+def local_agent_save_default_model():
+    """保存没有活动会话时选定的模型，作为之后新会话的默认模型。"""
+    raw_body = request.get_json(silent=True)
+    body = raw_body if isinstance(raw_body, dict) else {}
+    model_id = str(body.get("model_id") or "").strip()
+
+    if not model_id:
+        return jsonify({"success": False, "message": "模型 ID 不能为空"}), 400
+
+    models, _ = _local_agent_model_catalog()
+
+    if model_id not in {model["id"] for model in models}:
+        return jsonify({"success": False, "message": "所选模型当前不可用"}), 400
+
+    config.set("local_selected_model_id", model_id)
+
+    return jsonify({"success": True, "local_selected_model_id": model_id})
 
 
 @_local_bp.route("/api/local_agent/register", methods=["POST"])
