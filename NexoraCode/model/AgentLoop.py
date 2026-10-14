@@ -30,6 +30,7 @@ from .ToolPermissionPolicy import (
     create_pending_tool_action,
     evaluate_tool_call,
     get_permission_settings,
+    parse_tool_arguments,
 )
 from .turn_injection import plan_injection
 
@@ -68,7 +69,9 @@ def register_pending_permission_resume(
     if not clean_conversation_id:
         return
 
-    frozen_arguments = arguments if isinstance(arguments, dict) else {}
+    # provider 传入的 arguments 是 JSON 字符串，必须走统一解析，
+    # 否则续跑时工具拿不到参数（曾导致 local_file_read 缺 path 而执行失败）。
+    frozen_arguments = parse_tool_arguments(arguments)
 
     with _PENDING_RESUME_LOCK:
         _cleanup_pending_resume_locked()
@@ -361,7 +364,7 @@ class AgentLoop:
         round_index = 0
         # 最终答复是否已落盘：正常完成/中断落盘都置位，避免中断路径重复落盘。
         final_persisted = False
-        # 工具结果已经返回但正文为空时，按设置次数额外请求模型回复。
+        # 正文为空时（工具结果已返回，或首轮就撞上输出上限），按设置次数额外请求模型回复。
         tool_results_executed = 0
         empty_post_tool_retry_count = 0
         empty_post_tool_retry_limit = configured_retry_count(
@@ -369,8 +372,8 @@ class AgentLoop:
             "local_empty_response_retry_count",
             DEFAULT_EMPTY_RESPONSE_RETRY_COUNT,
         )
-        retry_after_empty_post_tool_response = False
-        # 本次请求内的自动重试记录（正文开始前的请求错误 / 工具结果后无正文）。
+        retry_after_empty_response = False
+        # 本次请求内的自动重试记录（正文开始前的请求错误 / 正文为空）。
         # 落盘进 metadata.auto_retries，重进对话后仍能看到重试过程提示。
         auto_retries: list[dict] = []
         # 上一轮产生的文本与 usage（中断落盘用，循环内每轮更新）。
@@ -466,11 +469,19 @@ class AgentLoop:
             round_volatile_instructions = list(volatile_blocks or [])
             round_volatile_full_instructions = list(volatile_full_blocks or [])
 
-            if retry_after_empty_post_tool_response:
-                round_volatile_instructions.append(
-                    "上一轮工具结果已经返回，但模型没有生成正文。请依据已有工具结果直接完成用户请求并给出简洁正文；"
-                    "只有结果不足时才继续调用工具，不要重复推理内容。"
-                )
+            if retry_after_empty_response:
+                # 首轮撞上限时输入与上次完全相同，若不改变输入，模型会重复同样的思考
+                # 再次吃满预算。这里显式要求压缩思考、直接给正文。
+                if tool_results_executed > 0:
+                    round_volatile_instructions.append(
+                        "上一轮工具结果已经返回，但模型没有生成正文。请依据已有工具结果直接完成用户请求并给出简洁正文；"
+                        "只有结果不足时才继续调用工具，不要重复推理内容。"
+                    )
+                else:
+                    round_volatile_instructions.append(
+                        "上一轮模型没有生成正文，输出预算被思考过程耗尽。请压缩思考过程，"
+                        "直接给出用户需要的正文内容，不要复述推理细节。"
+                    )
 
             try:
                 # 显式转发 prepare 的压缩事件：yield from 无法在转发时拦截，
@@ -520,7 +531,7 @@ class AgentLoop:
                     yield event
 
                 force_context_compression = False
-                retry_after_empty_post_tool_response = False
+                retry_after_empty_response = False
             except Exception:
                 _LOGGER.exception("[LocalContext] prepare_failed conversation=%s", conversation_id)
                 raise
@@ -597,6 +608,17 @@ class AgentLoop:
                         auto_retries.append(retry_record)
                         yield retry_record
             except Exception as exc:
+                # 取消优先于错误上报：用户在连接/流式阶段主动终止时，provider 会抛出
+                # 取消信号。此时不能当成「模型调用失败」——否则会多推一条 error 事件、
+                # 把半截内容落盘成失败消息，worker 也要等落盘逻辑走完才退出，
+                # 期间 session 卡在 cancelling，用户既发不出新消息也无法再次终止。
+                if self._is_cancelled(cancel_checker):
+                    _LOGGER.info(
+                        "[LocalAgent] provider stream cancelled conversation=%s",
+                        conversation_id,
+                    )
+                    break
+
                 # 模型流异常：打印完整错误（含 HTTP 状态与响应体），便于定位 4xx/5xx 配置问题。
                 _LOGGER.exception("[LocalAgent] provider stream error conversation=%s", conversation_id)
 
@@ -680,9 +702,11 @@ class AgentLoop:
                     if self._is_cancelled(cancel_checker):
                         break
 
-                    should_retry_after_tool = (
-                        tool_results_executed > 0
-                        and empty_post_tool_retry_count < empty_post_tool_retry_limit
+                    # 空回复重试：工具结果已返回但正文为空，或首轮就撞上输出上限导致
+                    # 正文为空（思考吃满预算），都按配置次数重试。finish_reason=tool_calls
+                    # 不重试——那是协议异常，重试只会重复同样的失败。
+                    should_retry_empty_response = (
+                        empty_post_tool_retry_count < empty_post_tool_retry_limit
                         and finish_reason != "tool_calls"
                     )
                     # 重试提示与终态错误文案共用同一份结束原因描述。
@@ -697,17 +721,23 @@ class AgentLoop:
                         f"finish_reason={finish_reason or 'missing'} content_chars=0 "
                         f"reasoning_chars={sum(len(str(part)) for part in assistant_reasoning_parts)} "
                         f"tool_results={tool_results_executed} "
-                        f"auto_retry={int(should_retry_after_tool)}"
+                        f"auto_retry={int(should_retry_empty_response)}"
                     )
 
-                    if should_retry_after_tool:
+                    if should_retry_empty_response:
                         empty_post_tool_retry_count += 1
-                        retry_after_empty_post_tool_response = True
+                        retry_after_empty_response = True
 
-                        # 工具结果已返回但正文为空：告知前端正在重试，避免界面静默卡住。
+                        # 正文为空：告知前端正在重试，避免界面静默卡住。
+                        # 有无工具结果决定措辞，否则会宣称"工具结果已返回"而实际没有。
+                        if tool_results_executed > 0:
+                            retry_reason = f"工具结果已返回，但模型没有生成正文（{finish_detail}）"
+                        else:
+                            retry_reason = f"模型没有生成正文（{finish_detail}）"
+
                         retry_record = {
                             "type": "auto_retry",
-                            "reason": f"工具结果已返回，但模型没有生成正文（{finish_detail}）",
+                            "reason": retry_reason,
                             "attempt": empty_post_tool_retry_count,
                             "limit": empty_post_tool_retry_limit,
                             "round": max(0, int(round_index or 0)),
@@ -724,6 +754,11 @@ class AgentLoop:
                     elif tool_results_executed > 0:
                         error_message = (
                             f"工具结果已返回，但模型自动重试 {empty_post_tool_retry_count} 次后仍没有生成正文"
+                            f"（{finish_detail}）。"
+                        )
+                    elif empty_post_tool_retry_count > 0:
+                        error_message = (
+                            f"模型自动重试 {empty_post_tool_retry_count} 次后仍没有生成正文"
                             f"（{finish_detail}）。"
                         )
                     else:

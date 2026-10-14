@@ -136,7 +136,12 @@ def save_permission_settings(mode: str, approval_model_id: str, conversation_id:
     config.set("local_tool_approval_model_id", clean_model_id)
 
 
-def _parse_arguments(arguments: Any) -> dict:
+def parse_tool_arguments(arguments: Any) -> dict:
+    """把 provider 传入的工具参数统一解析成 dict。
+
+    provider 的 tool_calls 里 arguments 是 JSON 字符串，内部登记/审批链路
+    需要 dict；两处必须用同一份解析，避免参数在某一环被丢成空 dict。
+    """
     if isinstance(arguments, dict):
         return arguments
 
@@ -156,7 +161,7 @@ def classify_tool_call(executor, tool_name: str, arguments: Any) -> dict:
     requested_name = str(tool_name or "").strip()
     tool = executor.resolve(requested_name) if executor is not None else None
     canonical_name = str(getattr(tool, "name", "") or requested_name)
-    args = _parse_arguments(arguments)
+    args = parse_tool_arguments(arguments)
 
     declared_operation = str(getattr(tool, "permission_operation", "") or "").strip().lower()
 
@@ -725,7 +730,7 @@ def create_pending_tool_action(
     project_root: str,
 ) -> dict:
     """保存确认卡对应的原始调用，审批接口只能执行这份服务端记录。"""
-    clean_arguments = _parse_arguments(arguments)
+    clean_arguments = parse_tool_arguments(arguments)
     clean_conversation_id = str(conversation_id or "").strip()
     clean_tool_call_id = str(tool_call_id or "").strip()
 

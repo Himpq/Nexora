@@ -276,15 +276,17 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("自动重试 2 次后仍没有生成正文", errors[0]["message"])
 
-    def test_empty_response_without_tool_is_reported_without_retry(self):
+    def test_empty_response_without_tool_is_retried_then_reported(self):
         class Provider:
             config = types.SimpleNamespace(context_window=8000, max_tokens=4096, model="test")
 
             def __init__(inner_self):
-                inner_self.calls = 0
+                inner_self.calls = []
+                inner_self.request_messages = []
 
             def stream_chat(inner_self, messages, **kwargs):
-                inner_self.calls += 1
+                inner_self.calls.append(messages)
+                inner_self.request_messages.append(messages)
                 yield {"type": "reasoning_content", "delta": "只有推理。"}
                 yield {"type": "finish", "finish_reason": "length"}
 
@@ -296,10 +298,16 @@ class ContextTests(unittest.TestCase):
             self.cid, "新请求", system_prompt="system",
         ))
 
-        self.assertEqual(provider.calls, 1)
+        # 首轮撞上输出上限且正文为空：按 local_empty_response_retry_count=2 重试，
+        # 共 3 次调用（首轮 + 2 次重试）。
+        self.assertEqual(len(provider.calls), 3)
+        # 重试时注入的指令必须是无工具版本，不能宣称"工具结果已返回"。
+        self.assertIn("输出预算被思考过程耗尽", provider.request_messages[1][-1]["content"])
+        self.assertNotIn("上一轮工具结果已经返回", provider.request_messages[1][-1]["content"])
         self.assertFalse(any(event["type"] == "done" for event in events))
         errors = [event for event in events if event["type"] == "error"]
         self.assertEqual(len(errors), 1)
+        self.assertIn("自动重试 2 次后仍没有生成正文", errors[0]["message"])
         self.assertIn("已达到单轮输出上限", errors[0]["message"])
 
     def test_short_context_reduces_request_output_limit(self):

@@ -854,9 +854,10 @@ class ProviderClient:
                     if content:
                         yield {"type": "content", "delta": content}
 
-                    # 推理模型（GLM-5-Base / DeepSeek-R1 等）思考过程走 reasoning_content，
-                    # 单独提取，避免界面在思考期间长时间空白。
-                    reasoning = delta.get("reasoning_content")
+                    # 推理模型的思考过程走独立字段，避免界面在思考期间长时间空白。
+                    # 上游口径不统一：GLM-5-Base / DeepSeek-R1 用 reasoning_content，
+                    # DeepSeek-V4-Flash 等用 reasoning，两个字段都要读，否则思考内容被丢弃。
+                    reasoning = delta.get("reasoning_content") or delta.get("reasoning")
 
                     if reasoning:
                         yield {"type": "reasoning_content", "delta": reasoning}
