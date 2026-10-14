@@ -41,6 +41,18 @@ function readStoredPreference(): ThemePreference {
 }
 
 /**
+ * NexoraCode 构建下主题偏好的权威源是服务端 config.json（general.theme），
+ * 不用 localStorage：本地服务端口随机，origin 每次启动都变，localStorage 无法跨启动保留。
+ * 该值在应用挂载前通过 initThemeFromServer 拉取，作为 setTheme 之外的兜底参考。
+ */
+let serverPreference: ThemePreference | null = null
+
+/** 当前生效的偏好：服务端值优先，未取到时回退 localStorage / 系统。 */
+function currentPreference(): ThemePreference {
+    return serverPreference ?? readStoredPreference()
+}
+
+/**
  * 外部输入(服务器偏好 / localStorage)的主题档位守卫:
  * 主题的持久化以服务器偏好为权威源,localStorage 仅作启动期缓存,
  * 两处的存量字符串都必须经过本守卫才能进入主题状态。
@@ -56,7 +68,7 @@ function readSystemTheme(): ResolvedTheme {
 /** 主题状态(响应式单例) */
 export const theme = reactive({
     /** 用户偏好档位(持久化) */
-    preference: readStoredPreference(),
+    preference: currentPreference(),
     /** 当前实际渲染的主题 */
     resolved: 'light' as ResolvedTheme,
 })
@@ -86,6 +98,7 @@ function applyDocument(): void {
  * 必须在应用挂载前调用,保证首帧即为目标主题(避免浅色闪屏)。
  */
 export function initTheme(): void {
+    theme.preference = currentPreference()
     theme.resolved = theme.preference === 'system' ? readSystemTheme() : theme.preference
     applyDocument()
 
@@ -132,7 +145,15 @@ function withThemeSwitchGuard(apply: () => void): void {
 /** 设置偏好档位:持久化并立即应用到文档 */
 export function setTheme(preference: ThemePreference): void {
     theme.preference = preference
-    localStorage.setItem(STORAGE_KEY, preference)
+
+    // NexoraCode 构建:偏好写服务端 config.json（localStorage 因 origin 随机不可用）。
+    // 本体网页端仍写 localStorage，由 App.vue 负责同步到服务器偏好。
+    if (isNexoraCodeBuild()) {
+        serverPreference = preference
+        void persistThemeToServer(preference)
+    } else {
+        localStorage.setItem(STORAGE_KEY, preference)
+    }
 
     withThemeSwitchGuard(() => {
         theme.resolved = preference === 'system' ? readSystemTheme() : preference
@@ -142,6 +163,56 @@ export function setTheme(preference: ThemePreference): void {
     // Learning 强制亮色期间改偏好:同步暂存,退出恢复时以最新选择为准
     if (learningLightDepth > 0) {
         savedLearningResolved = theme.resolved
+    }
+}
+
+/** 当前是否为 NexoraCode 桌面端构建 */
+function isNexoraCodeBuild(): boolean {
+    return import.meta.env.MODE === 'nexoracode'
+}
+
+/**
+ * 把主题偏好写回服务端 config.json（general.theme）。
+ *
+ * 动态 import 避免 theme.ts 与 api 层形成静态循环依赖；
+ * 失败只告警不抛出——主题是本地能力，写盘失败不应打断界面。
+ */
+async function persistThemeToServer(preference: ThemePreference): Promise<void> {
+    try {
+        const { saveLocalThemePreference } = await import('@/api/nexoracodeLocal')
+
+        await saveLocalThemePreference(preference)
+    } catch (error) {
+        console.warn('[theme] 主题偏好写入服务端失败，本次仅本地生效', error)
+    }
+}
+
+/**
+ * 应用挂载前从服务端读取主题偏好并落文档（仅 NexoraCode 构建）。
+ *
+ * 必须在 initTheme() 之前 await，保证首帧即为目标主题；
+ * 接口不可达时保留 localStorage/系统兜底值，不阻塞启动。
+ */
+export async function initThemeFromServer(): Promise<void> {
+    if (!isNexoraCodeBuild()) {
+        return
+    }
+
+    try {
+        const { fetchLocalThemePreference } = await import('@/api/nexoracodeLocal')
+        const stored = await fetchLocalThemePreference()
+
+        if (!isThemePreference(stored)) {
+            return
+        }
+
+        serverPreference = stored
+        theme.preference = stored
+        theme.resolved = stored === 'system' ? readSystemTheme() : stored
+        applyDocument()
+        console.info(`[theme] server preference=${stored} resolved=${theme.resolved}`)
+    } catch (error) {
+        console.warn('[theme] 读取服务端主题偏好失败，回退本地兜底', error)
     }
 }
 

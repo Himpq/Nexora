@@ -81,7 +81,7 @@
 }
 
 .permission-info-trigger:focus-visible {
-    outline: 2px solid rgba(91, 141, 239, 0.25);
+    outline: 2px solid var(--accent-ring-strong);
     outline-offset: 2px;
 }
 
@@ -95,7 +95,7 @@
     border: 1px solid var(--border-light);
     border-radius: 8px;
     background: var(--bg-main);
-    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+    box-shadow: var(--shadow-popover);
     color: var(--text-main);
     font-size: var(--settings-font-help);
     font-weight: 400;
@@ -146,7 +146,7 @@
 }
 
 .permission-mode-trigger:focus-visible {
-    outline: 2px solid rgba(91, 141, 239, 0.3);
+    outline: 2px solid var(--accent-ring-strong);
     outline-offset: 2px;
 }
 
@@ -215,7 +215,7 @@
     border-radius: 12px;
     background: var(--bg-main);
     color: var(--text-main);
-    box-shadow: 0 12px 34px rgba(18, 28, 42, 0.16);
+    box-shadow: var(--shadow-popover-strong);
     scrollbar-width: thin;
     scrollbar-color: var(--border-input) transparent;
 }
@@ -254,7 +254,7 @@
 }
 
 .permission-mode-option:focus-visible {
-    outline: 2px solid rgba(91, 141, 239, 0.25);
+    outline: 2px solid var(--accent-ring-strong);
     outline-offset: -2px;
 }
 
@@ -341,7 +341,7 @@
 }
 
 .permission-model-trigger:focus-visible {
-    outline: 2px solid rgba(91, 141, 239, 0.22);
+    outline: 2px solid var(--accent-ring-strong);
     outline-offset: 1px;
 }
 
@@ -395,7 +395,7 @@
     border: 1px solid var(--border-light);
     border-radius: 8px;
     background: var(--bg-main);
-    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+    box-shadow: var(--shadow-popover);
 }
 
 .permission-model-menu[hidden] {
@@ -448,7 +448,7 @@
 .permission-model-option:hover,
 .permission-model-option[aria-selected="true"],
 .permission-model-option.active {
-    background: #f3f6fc;
+    background: var(--bg-option-active);
 }
 
 .permission-model-option.active {
@@ -456,7 +456,7 @@
 }
 
 .permission-model-option:focus-visible {
-    outline: 2px solid rgba(91, 141, 239, 0.25);
+    outline: 2px solid var(--accent-ring-strong);
     outline-offset: -2px;
 }
 
@@ -554,12 +554,12 @@
 }
 
 .permission-event-decision.is-approved {
-    background: #eaf6ee;
-    color: #287b42;
+    background: var(--bg-approved);
+    color: var(--text-approved);
 }
 
 .permission-event-decision.is-denied {
-    background: #fff0ef;
+    background: var(--bg-denied);
     color: var(--danger);
 }
 

@@ -1,3 +1,7 @@
+/*
+ * 插件卡片沿用设置页主题令牌：--border/--surface/--muted/--input 未定义时才用中性灰兜底，
+ * 这样亮暗两套主题都能自动适配，无需为插件面板单独维护颜色。
+ */
 .plugin-list {
     display: grid;
     gap: 14px;
@@ -6,9 +10,9 @@
 
 .plugin-card {
     padding: 18px;
-    border: 1px solid var(--border, rgba(127, 127, 127, .24));
+    border: 1px solid var(--border, var(--border-light));
     border-radius: 12px;
-    background: var(--surface, rgba(127, 127, 127, .06));
+    background: var(--surface, var(--bg-panel));
 }
 
 .plugin-card-header,
@@ -28,7 +32,7 @@
 .plugin-card-meta,
 .plugin-card-description,
 .plugin-card-status {
-    color: var(--muted, #888);
+    color: var(--muted, var(--text-secondary));
     font-size: 12px;
 }
 
@@ -38,7 +42,7 @@
 }
 
 .plugin-card-status.is-error {
-    color: #d45b5b;
+    color: var(--danger);
 }
 
 .plugin-card-tags {
@@ -50,14 +54,14 @@
 
 .plugin-tag {
     padding: 3px 8px;
-    border: 1px solid var(--border, rgba(127, 127, 127, .24));
+    border: 1px solid var(--border, var(--border-light));
     border-radius: 999px;
-    color: var(--muted, #888);
+    color: var(--muted, var(--text-secondary));
     font-size: 11px;
 }
 
 .plugin-tag-capability {
-    color: #b7791f;
+    color: var(--warning-text, #b7791f);
 }
 
 .plugin-enabled-toggle {
@@ -72,7 +76,7 @@
     gap: 12px;
     margin-top: 16px;
     padding-top: 14px;
-    border-top: 1px solid var(--border, rgba(127, 127, 127, .2));
+    border-top: 1px solid var(--border, var(--border-light));
 }
 
 .plugin-settings-field {
@@ -86,7 +90,7 @@
 }
 
 .plugin-settings-field small {
-    color: var(--muted, #888);
+    color: var(--muted, var(--text-secondary));
     font-size: 12px;
 }
 
@@ -96,9 +100,9 @@
     width: 100%;
     min-height: 36px;
     padding: 7px 10px;
-    border: 1px solid var(--border, rgba(127, 127, 127, .28));
+    border: 1px solid var(--border, var(--border-input));
     border-radius: 7px;
-    background: var(--input, rgba(127, 127, 127, .08));
+    background: var(--input, var(--bg-input));
     color: inherit;
 }
 
@@ -108,14 +112,14 @@
 
 .plugin-settings-status {
     margin: 0;
-    color: var(--muted, #888);
+    color: var(--muted, var(--text-secondary));
     font-size: 12px;
 }
 
 .plugin-empty-state {
     padding: 22px;
-    border: 1px dashed var(--border, rgba(127, 127, 127, .3));
+    border: 1px dashed var(--border, var(--border-light));
     border-radius: 10px;
-    color: var(--muted, #888);
+    color: var(--muted, var(--text-secondary));
     text-align: center;
 }

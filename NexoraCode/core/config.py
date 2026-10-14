@@ -51,6 +51,9 @@ _DEFAULTS = {
     "local_selected_model_id": "",
     "local_custom_system_prompt": "",
     "local_read_agents_md": True,
+    # 外观主题偏好：light / dark / system（跟随系统）。存服务端配置而非 localStorage，
+    # 因为本地服务端口随机，origin 每次都变，localStorage 无法跨启动保留。
+    "local_theme": "system",
     "local_agent": True,
     "local_text_search_max_results": 100,
     "local_file_tree_max_entries": 500,

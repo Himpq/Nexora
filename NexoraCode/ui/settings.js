@@ -19,7 +19,8 @@
     var state = {
         providers: [],
         defaultId: "",
-        editingId: ""
+        editingId: "",
+        theme: "system"
     };
 
     // ===== API =====
@@ -424,6 +425,89 @@
 
     var CUSTOM_PROMPT_LIMIT = 8000;
 
+    var THEME_PREFERENCES = ["light", "dark", "system"];
+
+    /** 主题档位守卫：非法值一律回落到 system。 */
+    function normalizeTheme(value) {
+        var text = String(value || "").trim().toLowerCase();
+
+        return THEME_PREFERENCES.indexOf(text) >= 0 ? text : "system";
+    }
+
+    /** 把偏好解析成实际主题（system 走系统外观探测）。 */
+    function resolveTheme(preference) {
+        if (preference !== "system") {
+            return preference;
+        }
+
+        try {
+            return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        } catch (_) {
+            return "light";
+        }
+    }
+
+    /**
+     * 把主题落到设置页自身：设置页与主窗口共用一套偏好，
+     * 用户在这里选深色时页面应立即变暗，否则无法判断效果。
+     */
+    function applyThemeToDocument(preference) {
+        var resolved = resolveTheme(normalizeTheme(preference));
+
+        if (resolved === "dark") {
+            document.documentElement.setAttribute("data-theme", "dark");
+        } else {
+            document.documentElement.removeAttribute("data-theme");
+        }
+    }
+
+    /** 渲染主题三选的选中态。 */
+    function renderThemeOptions() {
+        var group = $("g-theme");
+
+        if (!group) {
+            return;
+        }
+
+        group.querySelectorAll("[data-theme]").forEach(function (button) {
+            var active = String(button.dataset.theme || "") === state.theme;
+
+            button.setAttribute("aria-pressed", active ? "true" : "false");
+        });
+    }
+
+    /** 点击主题选项：只改 state，落库仍由「保存设置」统一提交。 */
+    function bindThemeOptions() {
+        var group = $("g-theme");
+
+        if (!group) {
+            return;
+        }
+
+        group.addEventListener("click", function (event) {
+            var target = event.target;
+            var button = target instanceof Element ? target.closest("[data-theme]") : null;
+
+            if (!button || !group.contains(button)) {
+                return;
+            }
+
+            state.theme = normalizeTheme(button.dataset.theme);
+            renderThemeOptions();
+            // 即时预览：设置页自身跟随选择切换，便于确认效果
+            applyThemeToDocument(state.theme);
+        });
+
+        // system 档位下跟随系统外观变化实时刷新设置页
+        try {
+            window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
+                if (state.theme === "system") {
+                    applyThemeToDocument(state.theme);
+                }
+            });
+        } catch (_) {}
+    }
+
     /** 刷新自定义提示词字符计数（nowLen / 8000）。 */
     function updateCustomPromptCount() {
         var field = $("g-custom-prompt");
@@ -448,6 +532,7 @@
                 custom_system_prompt: $("g-custom-prompt").value,
                 read_agents_md: $("g-read-agents-md").checked,
                 tool_auto_expand: $("g-tool-auto-expand").checked,
+                theme: state.theme,
                 auto_retry_count: Number($("g-auto-retry-count").value),
                 empty_response_retry_count: Number($("g-empty-response-retry-count").value)
             }
@@ -490,6 +575,9 @@
         updateCustomPromptCount();
         $("g-read-agents-md").checked = general.read_agents_md !== false;
         $("g-tool-auto-expand").checked = general.tool_auto_expand !== false;
+        state.theme = normalizeTheme(general.theme);
+        renderThemeOptions();
+        applyThemeToDocument(state.theme);
         $("g-auto-retry-count").value = general.auto_retry_count != null ? general.auto_retry_count : 5;
         $("g-empty-response-retry-count").value = general.empty_response_retry_count != null
             ? general.empty_response_retry_count
@@ -565,6 +653,7 @@
         });
 
         $("g-custom-prompt").addEventListener("input", updateCustomPromptCount);
+        bindThemeOptions();
 
         reload();
         window.NexoraToolPermissions.reload().catch(function (error) {

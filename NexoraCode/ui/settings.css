@@ -22,6 +22,9 @@
     --bg-sidebar: #050505;
     --bg-sidebar-hover: #1a1a1a;
     --text-sidebar: #a0a0a0;
+    /* 侧栏选中项：亮色主题下用白底黑字形成强对比 */
+    --bg-sidebar-active: #ffffff;
+    --text-sidebar-active: #000000;
 
     --bg-main: #ffffff;
     --bg-surface: #ffffff;
@@ -37,11 +40,100 @@
     --bg-input-hover: #eceef1;
     --border-input-strong: #d3d6db;
 
+    /* 底部保存栏：半透明毛玻璃，随主题切换底色 */
+    --bg-bar: rgba(255, 255, 255, 0.97);
+    /* 滚动条滑块 */
+    --bg-scrollbar: #cbd0d8;
+    /* 卡片/列表项 hover 描边 */
+    --border-hover: #d4d4d4;
+    /* 下拉选中项底色 */
+    --bg-option-active: #f3f6fc;
+    /* 状态徽标：通过 / 拒绝 */
+    --bg-approved: #eaf6ee;
+    --text-approved: #287b42;
+    --bg-denied: #fff0ef;
+    /* 弹层阴影 */
+    --shadow-popover: 0 8px 24px rgba(15, 23, 42, 0.14);
+    --shadow-popover-strong: 0 12px 34px rgba(18, 28, 42, 0.16);
+    /* GitHub 概览卡片专用色阶 */
+    --gh-border: #e3e6eb;
+    --gh-border-soft: #f0f1f3;
+    --gh-title: #24292f;
+    --gh-text: #424a53;
+    --gh-muted: #737b87;
+    --gh-muted-strong: #68717d;
+    --gh-icon: #77808c;
+    --gh-mark: #8c959f;
+
     --accent: #5b8def;
     --accent-strong: #3f74d8;
+    /* 焦点环与选中底色：用 accent 的透明叠加，随主题切换自动跟随 */
+    --accent-ring: rgba(91, 141, 239, 0.12);
+    --accent-ring-strong: rgba(63, 116, 216, 0.4);
+    --accent-surface: rgba(91, 141, 239, 0.08);
     --danger: #d64545;
     --ok: #2e9e5b;
     --radius: 8px;
+}
+
+/*
+ * 暗色主题：由设置页脚本按 config.json 的 general.theme 落到 <html data-theme="dark">。
+ * 只覆盖颜色令牌，布局与字体层级保持与亮色完全一致。
+ * 色阶对齐主窗口 nexoracode.css 的 [data-theme=dark] 令牌，避免两处观感割裂。
+ */
+[data-theme="dark"] {
+    color-scheme: dark;
+
+    --tb-bg: #0b0b0d;
+    --tb-text: #9c9ca6;
+
+    --bg-sidebar: #0b0b0d;
+    --bg-sidebar-hover: #1d1d21;
+    --text-sidebar: #9c9ca6;
+    /* 暗色下选中项改用浅灰底 + 亮字，白底黑字在暗色里过曝 */
+    --bg-sidebar-active: #2c2c31;
+    --text-sidebar-active: #ececf1;
+
+    --bg-main: #141416;
+    --bg-surface: #202024;
+    --text-main: #d6d6dc;
+    --text-secondary: #9c9ca6;
+
+    --border-light: #2c2c32;
+    --border-input: #38383f;
+    --bg-panel: #1a1a1d;
+
+    --bg-input: #1a1a1d;
+    --bg-input-hover: #26262b;
+    --border-input-strong: #4a4a53;
+
+    --bg-bar: rgba(20, 20, 22, 0.97);
+    --bg-scrollbar: #45454d;
+    --border-hover: #45454d;
+    --bg-option-active: #26262b;
+    --bg-approved: #12291c;
+    --text-approved: #7fdca4;
+    --bg-denied: #38181a;
+    --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.5);
+    --shadow-popover-strong: 0 12px 34px rgba(0, 0, 0, 0.55);
+
+    --gh-border: #2c2c32;
+    --gh-border-soft: #26262b;
+    --gh-title: #d6d6dc;
+    --gh-text: #c4c4cc;
+    --gh-muted: #9c9ca6;
+    --gh-muted-strong: #9c9ca6;
+    --gh-icon: #85858f;
+    --gh-mark: #85858f;
+
+    --accent: #8ab4f8;
+    --accent-strong: #6f9ce8;
+    /* 暗色下焦点环与选中底色改用亮蓝叠加，保证在深底上可见 */
+    --accent-ring: rgba(138, 180, 248, 0.18);
+    --accent-ring-strong: rgba(138, 180, 248, 0.5);
+    --accent-surface: rgba(138, 180, 248, 0.12);
+    --danger: #f19999;
+    --ok: #7fdca4;
 }
 
 * {
@@ -187,8 +279,8 @@ textarea {
 
 .nav-item.active,
 .nav-subitem.active {
-    background: #ffffff;
-    color: #000000;
+    background: var(--bg-sidebar-active);
+    color: var(--text-sidebar-active);
     font-weight: var(--settings-weight-semibold);
 }
 
@@ -323,7 +415,7 @@ textarea {
     height: 58px;
     padding: 12px 34px;
     border-top: 1px solid var(--border-light);
-    background: rgba(255, 255, 255, 0.97);
+    background: var(--bg-bar);
 }
 
 .status {
@@ -368,7 +460,7 @@ button.primary:disabled {
 ::-webkit-scrollbar-thumb {
     border: 2px solid transparent;
     border-radius: 6px;
-    background: #cbd0d8;
+    background: var(--bg-scrollbar);
     background-clip: padding-box;
 }
 

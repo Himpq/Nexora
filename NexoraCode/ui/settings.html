@@ -4,9 +4,29 @@
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>NexoraCode 设置</title>
+    <script>
+        /*
+         * 首帧防闪色：__NC_THEME__ 由服务端按 config.json 的 general.theme 注入。
+         * 同步解析并落 data-theme，CSS 首次绘制即为目标主题，无需等接口。
+         * system 档位在这里用 matchMedia 解析——服务端不知道客户端系统外观。
+         */
+        (function () {
+            try {
+                var pref = "__NC_THEME__";
+                var resolved = pref === "system"
+                    ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+                    : pref;
+
+                if (resolved === "dark") {
+                    document.documentElement.setAttribute("data-theme", "dark");
+                }
+            } catch (_) {}
+        })();
+    </script>
     <link rel="stylesheet" href="/settings.css?v=20261010_integrated_settings_01"/>
     <link rel="stylesheet" href="/settings-controls.css?v=20261010_integrated_settings_01"/>
     <link rel="stylesheet" href="/settings-sections.css?v=20261010_integrated_settings_01"/>
+    <link rel="stylesheet" href="/settings-noselect.css?v=20261012_noselect_01"/>
     <link rel="stylesheet" href="/github-project-settings.css?v=20261012_github_project_01"/>
     <link rel="stylesheet" href="/permissions-settings.css?v=20261010_integrated_settings_01"/>
     <link rel="stylesheet" href="/plugins-settings.css"/>
@@ -70,13 +90,31 @@
             <!-- Common -->
             <section id="view-common" class="view">
                 <h1>通用</h1>
-                <p class="sub">设置本地会话使用的用户名。</p>
+                <p class="sub">设置本地会话使用的用户名与界面外观。</p>
 
                 <div class="settings-fields">
                     <label class="field">
                         <span>本地用户名</span>
                         <input id="g-username" type="text" placeholder="local" spellcheck="false"/>
                     </label>
+                    <div class="field">
+                        <span>外观主题</span>
+                        <div id="g-theme" class="theme-options" role="group" aria-label="外观主题">
+                            <button type="button" class="theme-option" data-theme="light" aria-pressed="false">
+                                <strong>浅色</strong>
+                                <small>始终使用亮色</small>
+                            </button>
+                            <button type="button" class="theme-option" data-theme="dark" aria-pressed="false">
+                                <strong>深色</strong>
+                                <small>始终使用暗色</small>
+                            </button>
+                            <button type="button" class="theme-option" data-theme="system" aria-pressed="false">
+                                <strong>跟随系统</strong>
+                                <small>随系统外观切换</small>
+                            </button>
+                        </div>
+                        <small class="hint">设置保存在本机配置中，重启 NexoraCode 后仍然生效；保存后主窗口立即切换。</small>
+                    </div>
                 </div>
             </section>
 

@@ -48,5 +48,5 @@ export {
     overlay,
 } from './overlay'
 
-export { initTheme, isThemePreference, setTheme, theme } from './theme'
+export { initTheme, initThemeFromServer, isThemePreference, setTheme, theme } from './theme'
 export type { ResolvedTheme, ThemePreference } from './theme'

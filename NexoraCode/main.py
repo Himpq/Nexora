@@ -1669,6 +1669,7 @@ class NexoraWindowApi:
                     "if (view.__ncLoadModels) { view.__ncLoadModels(); }"
                     "if (view.__ncRefreshToolPermissions) { view.__ncRefreshToolPermissions(); }"
                     "if (view.__ncRefreshToolAutoExpand) { view.__ncRefreshToolAutoExpand(); }"
+                    "if (view.__ncRefreshTheme) { view.__ncRefreshTheme(); }"
                     "return !!(view.__ncLoadModels && view.__ncRefreshToolPermissions);"
                     "})();"
                 )

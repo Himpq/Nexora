@@ -957,11 +957,20 @@ def local_settings_asset():
 
 @app.route("/settings")
 def local_settings_page():
-    """本地自绘设置页。"""
+    """本地自绘设置页。注入主题偏好供首帧解析，避免暗色下闪白。"""
     target = get_bundle_root() / "ui" / "settings.html"
     if not target.is_file():
         return Response("settings not built", status=503, mimetype="text/plain")
-    return _serve_file(target, cache_seconds=0)
+    try:
+        html = target.read_text(encoding="utf-8")
+    except Exception as exc:
+        return Response(f"settings read failed: {exc}", status=500, mimetype="text/plain")
+
+    # 只替换占位符；settings.html 其余部分保持原样，不做模板渲染。
+    html = html.replace("__NC_THEME__", _normalized_theme(config.get("local_theme", "system")))
+    resp = Response(html, mimetype="text/html; charset=utf-8")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
 
 
 @app.route("/api/local/plugins", methods=["GET"])
@@ -1010,6 +1019,15 @@ def local_plugin_settings(plugin_id: str):
     return jsonify({"success": True, **settings})
 
 
+_VALID_THEME_PREFERENCES = ("light", "dark", "system")
+
+
+def _normalized_theme(value) -> str:
+    """主题偏好守卫：非法值一律回落到 system（跟随系统）。"""
+    text = str(value or "").strip().lower()
+    return text if text in _VALID_THEME_PREFERENCES else "system"
+
+
 @app.route("/api/local/settings", methods=["GET"])
 def local_settings_get():
     """读取本地设置（Provider 列表 + 对话配置）。api_key 不回显明文。"""
@@ -1045,6 +1063,7 @@ def local_settings_get():
             "custom_system_prompt": str(config.get("local_custom_system_prompt", "") or ""),
             "read_agents_md": bool(config.get("local_read_agents_md", True)),
             "tool_auto_expand": bool(config.get("local_tool_auto_expand", True)),
+            "theme": _normalized_theme(config.get("local_theme", "system")),
             "auto_retry_count": configured_retry_count(
                 config,
                 "local_auto_retry_count",
@@ -1088,6 +1107,12 @@ def local_settings_save():
         and not isinstance(general_payload["tool_auto_expand"], bool)
     ):
         return jsonify({"success": False, "message": "工具调用自动展开设置必须是布尔值"}), 400
+
+    if (
+        "theme" in general_payload
+        and str(general_payload.get("theme") or "").strip().lower() not in _VALID_THEME_PREFERENCES
+    ):
+        return jsonify({"success": False, "message": "主题设置必须是 light、dark 或 system"}), 400
 
     raw_providers = provider_payload.get("providers")
 
@@ -1153,6 +1178,9 @@ def local_settings_save():
 
     if "tool_auto_expand" in general_payload:
         config.set("local_tool_auto_expand", general_payload["tool_auto_expand"])
+
+    if "theme" in general_payload:
+        config.set("local_theme", _normalized_theme(general_payload.get("theme")))
 
     for config_key, retry_count in validated_retry_counts.items():
         config.set(config_key, retry_count)

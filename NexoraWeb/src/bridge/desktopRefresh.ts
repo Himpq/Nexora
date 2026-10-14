@@ -19,6 +19,7 @@
  */
 
 import { useModelStore } from '@/stores/model'
+import { initThemeFromServer } from '@/ui/theme'
 
 /**
  * 工具权限刷新事件名:权限状态在 NexoraCodePermissionMenu 组件本地,用事件解耦。
@@ -31,6 +32,7 @@ interface NexoraCodeRefreshWindow extends Window {
     __ncLoadModels?: () => Promise<void>
     __ncRefreshToolPermissions?: () => void
     __ncRefreshToolAutoExpand?: () => void
+    __ncRefreshTheme?: () => Promise<void>
 }
 
 /**
@@ -56,5 +58,14 @@ export function registerDesktopRefreshBridge(): void {
 
     host.__ncRefreshToolAutoExpand = (): void => {
         window.dispatchEvent(new CustomEvent(NEXORACODE_TOOL_AUTO_EXPAND_REFRESH_EVENT))
+    }
+
+    /*
+     * 主题偏好存服务端 config.json，设置页保存后主窗口需要重新拉取。
+     * 直接复用 initThemeFromServer（含守卫与落文档），失败不抛出——
+     * 主题是本地能力，刷新失败不应让设置页的保存流程报错。
+     */
+    host.__ncRefreshTheme = async (): Promise<void> => {
+        await initThemeFromServer()
     }
 }

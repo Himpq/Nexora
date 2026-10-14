@@ -136,7 +136,7 @@
 }
 
 .provider-item:hover {
-    border-color: #d4d4d4;
+    border-color: var(--border-hover);
 }
 
 .provider-item.default {

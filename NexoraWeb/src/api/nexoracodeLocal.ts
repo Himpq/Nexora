@@ -48,6 +48,7 @@ interface LocalSettingsResponse {
     success: boolean
     general?: {
         tool_auto_expand?: unknown
+        theme?: unknown
     }
     message?: string
 }
@@ -148,6 +149,35 @@ export async function fetchLocalToolAutoExpand(): Promise<boolean> {
     }
 
     return data.general.tool_auto_expand
+}
+
+/**
+ * 读取 NexoraCode 外观主题偏好（light / dark / system）。
+ *
+ * 主题存服务端 config.json 而非 localStorage：本地服务端口随机，
+ * origin 每次启动都变，localStorage 无法跨启动保留。
+ * 返回值未经校验，由调用方（theme.ts）用 isThemePreference 守卫。
+ */
+export async function fetchLocalThemePreference(): Promise<unknown> {
+    const data = await apiFetch<LocalSettingsResponse>('/api/local/settings')
+
+    if (!data.success) {
+        throw new Error(data.message || '读取主题设置失败')
+    }
+
+    return data.general?.theme
+}
+
+/** 保存 NexoraCode 外观主题偏好（light / dark / system）。 */
+export async function saveLocalThemePreference(theme: string): Promise<void> {
+    const data = await apiFetch<{ success: boolean; message?: string }>('/api/local/settings', {
+        method: 'POST',
+        body: JSON.stringify({ general: { theme } }),
+    })
+
+    if (!data.success) {
+        throw new Error(data.message || '保存主题设置失败')
+    }
 }
 
 /** 保存新会话使用的全局默认模型。 */

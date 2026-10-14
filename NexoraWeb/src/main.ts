@@ -13,7 +13,7 @@ import App from './App.vue'
 import router from './router'
 import { registerDesktopRefreshBridge } from '@/bridge/desktopRefresh'
 import { initializeDesktopErrorLogging } from '@/bridge/desktopErrorLogging'
-import { initTheme } from '@/ui/theme'
+import { initTheme, initThemeFromServer } from '@/ui/theme'
 import { startNexoraCodePerformance } from '@/ui/nexoracodePerformance'
 
 // 设计资产加载顺序:原版 CSS(legacy)在前,GDDP 在后 —— 与收编前入口页的层叠顺序一致
@@ -50,8 +50,18 @@ const app = createApp(App)
 app.use(createPinia())
 app.use(router)
 
-// 主题初始化必须在挂载前:首帧即落 data-theme,避免浅色闪屏
-initTheme()
+// 主题初始化必须在挂载前:首帧即落 data-theme,避免浅色闪屏。
+// NexoraCode 构建下偏好存服务端 config.json(端口随机,localStorage 不可用),
+// 因此先 await 拉取服务端值再落文档;接口不可达时 initTheme 用系统兜底。
+async function bootstrapTheme(): Promise<void> {
+    if (import.meta.env.MODE === 'nexoracode') {
+        await initThemeFromServer()
+    }
+
+    initTheme()
+}
+
+await bootstrapTheme()
 
 if (import.meta.env.MODE === 'nexoracode') {
     startNexoraCodePerformance()
