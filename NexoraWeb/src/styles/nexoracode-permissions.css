@@ -131,7 +131,26 @@
     color: var(--permission-accent);
 }
 
+/* NexoraCode 品牌点：静态蓝色圆点，对齐设置窗口标题栏 .tb-icon 的 accent 蓝。 */
+.nexoracode-local-app .nc-brand-dot {
+    position: relative;
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    margin: 0 1.5px;
+    align-self: baseline;
+    color: transparent;
+}
+
 .nexoracode-local-app .nc-brand-dot::after {
-    content: none;
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--color-primary, #5b8def);
+    transform: translate(-50%, -50%);
     animation: none;
 }

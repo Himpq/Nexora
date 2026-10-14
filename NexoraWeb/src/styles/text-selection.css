@@ -1,0 +1,72 @@
+/**
+ * text-selection.css — 文本选择策略（侧栏禁选 / 对话标题可选）
+ *
+ * 职责:
+ *   - 侧栏(sidebar)整体禁选:品牌 tab、工具栏、会话列表、用户区均为"可点击的展示型文本",
+ *     拖动时不应产生选区,避免误选后拖拽会话项。
+ *   - 对话标题(#conversationTitle)显式恢复可选:它承载会话名,用户需要能复制。
+ *     注意 .chat-header 在 chat-core.css 里整体 user-select: none,此处必须用 text 覆盖。
+ *
+ * 边界:
+ *   - 消息正文、输入框、代码块等可编辑/可复制内容不在本文件范围内,保持原有选择能力。
+ *   - 侧栏内的输入控件(若有)显式恢复 text,避免被父级 none 连带禁用。
+ */
+
+/* ===== 侧栏整体禁选 ===== */
+.sidebar,
+.sidebar-header,
+.sidebar-brand-tabs,
+.sidebar-brand-tab,
+.sidebar-action,
+.sidebar-toolbar,
+.toolbar-item,
+.sidebar-content,
+.sidebar-empty,
+.sidebar-footer,
+.user-profile-button,
+.user-info,
+.user-name,
+.user-menu,
+.menu-item,
+.menu-divider {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* 会话列表项:整行是点击目标,标题与元信息都不可选 */
+.conversation-item,
+.conversation-item .title,
+.conversation-item-right,
+.conversation-stream-indicator {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* NexoraCode 项目侧栏 / 远程侧栏区块:同为展示型导航文本。
+ * 这里用属性前缀匹配覆盖 nexoracode-sidebar-* / remote-sidebar-* 的全部变体,
+ * 避免逐个类名列举时漏掉新增元素。 */
+[class*="nexoracode-sidebar"],
+[class*="remote-sidebar"] {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* ===== 对话标题:显式恢复可选 =====
+ * .chat-header 整体是 user-select: none(chat-core.css),这里覆盖回来。
+ * 需要 !important 才能压过同文件里 .chat-header 的声明。
+ */
+#conversationTitle,
+.header-center {
+    user-select: text !important;
+    -webkit-user-select: text !important;
+    cursor: text;
+}
+
+/* ===== 侧栏内输入控件兜底:保持可编辑可选 ===== */
+.sidebar input,
+.sidebar textarea,
+.sidebar select,
+.sidebar [contenteditable="true"] {
+    user-select: text;
+    -webkit-user-select: text;
+}

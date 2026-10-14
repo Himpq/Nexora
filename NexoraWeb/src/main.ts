@@ -44,6 +44,10 @@ import './styles/workspaces.css'
 import './styles/toastui-theme.css'
 import './styles/tool-stage-focus.css'
 import './styles/tool-stage-reply-preview.css'
+// 文本选择策略放最后:需覆盖 chat-core.css 里 .chat-header 的整体 user-select: none
+import './styles/text-selection.css'
+// 顶栏标题避让模型选择框:需覆盖 gddp-layout.css 的 .chat-header 网格列定义
+import './styles/header-avoid.css'
 
 const app = createApp(App)
 

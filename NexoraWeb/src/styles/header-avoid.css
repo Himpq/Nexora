@@ -1,0 +1,73 @@
+/**
+ * header-avoid.css — 顶栏标题避让左右两侧控件（NexoraCode + 云端共用）
+ *
+ * 问题:
+ *   .chat-header 是三列网格
+ *     grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+ *   左右两列都是 minmax(0, 1fr) —— 允许被压缩到 0 宽,而列内控件不可收缩:
+ *     - 第 1 列 .header-left:折叠按钮 + 模型选择框(.gddp-model-select 固定 width: 220px)
+ *     - 第 3 列 .header-right:笔记/通知/邮件/文件/知识库等 .btn-icon(各 36px + 8px gap)
+ *   且两侧列都是 overflow: visible,于是窗口变窄时控件溢出列边界,
+ *   分别从左右压住第 2 列的对话标题(.header-center)。
+ *
+ * 策略(不动 legacy 冻结资产):
+ *   1) 左右两列最小宽度都改为 min-content —— 列宽不再小于其内容,两侧控件各有自己的空间,
+ *      标题列因此天然避开,不会被任一侧覆盖;
+ *   2) 模型选择框允许收缩(min-width: 0)并设上限,窄窗口下自身截断而非外溢;
+ *   3) 标题列保持可截断:空间不足时走省略号,而不是把网格撑破或压住两侧控件。
+ *
+ * 注意:本文件对 NexoraCode 与云端(NexoraWeb)同时生效,两者共用同一份源码与顶栏结构。
+ */
+
+/* ===== 左右两列不再被压到内容宽度以下 =====
+ * min-content 保证 .header-left(含 220px 模型框)与 .header-right(含若干 36px 按钮)
+ * 始终有自己的空间;中间标题列因此被两侧"夹"在安全区内,不会被覆盖。 */
+.chat-header {
+    grid-template-columns: minmax(min-content, 1fr) auto minmax(min-content, 1fr);
+}
+
+/* ===== 第 1 列:模型选择框允许收缩,避免窄窗口外溢 ===== */
+.header-left .gddp-model-select {
+    flex: 0 1 auto;
+    width: 220px;
+    min-width: 0;
+    max-width: 220px;
+}
+
+/* 左侧折叠/返回按钮不参与收缩,保证图标始终完整 */
+.header-left > .btn-icon {
+    flex: none;
+}
+
+/* ===== 第 3 列:右侧按钮组不收缩,整组保留自身宽度 =====
+ * .header-right 在 gddp-layout.css 已是 flex: none,这里对子按钮再兜一层,
+ * 避免任何 flex 上下文变化导致按钮被压扁。 */
+.header-right {
+    flex: none;
+}
+
+.header-right > .btn-icon,
+.header-right > .chat-notification-wrap,
+.header-right > .chat-mail-wrap {
+    flex: none;
+}
+
+/* ===== 标题列:可截断,空间不足走省略号 ===== */
+.header-center {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ===== 窄窗口:进一步收紧模型框,把空间让给标题 ===== */
+@media (max-width: 760px) {
+    .header-left .gddp-model-select {
+        width: min(40vw, 180px);
+        max-width: min(40vw, 180px);
+    }
+
+    .header-center {
+        max-width: 40vw;
+    }
+}
