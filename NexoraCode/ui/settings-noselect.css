@@ -1,0 +1,153 @@
+/* NexoraCode 设置页：展示型文本禁止选中。
+ *
+ * 目标：标题、导航、字段标签、说明文案、按钮、统计标签等"只读展示"内容
+ * 不参与文本选择，避免拖动时误选；同时保留输入控件与正文的可选中能力。
+ *
+ * 排除（仍可选中复制）：
+ *   - input / textarea / select 等可编辑控件
+ *   - 关于页的链接与正文列表（.github-project-name、.about-list）
+ */
+
+/* ===== 标题栏 ===== */
+.tb-brand,
+.tb-title,
+.tb-btns,
+.tb-btn {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* ===== 左侧导航 ===== */
+.nav,
+.nav-list,
+.nav-item,
+.nav-group-toggle,
+.nav-subitem,
+.nav-foot {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* ===== 内容区标题与说明 ===== */
+.view > h1,
+.view h2,
+.sub,
+.permission-note,
+.info-box,
+.info-title,
+.info-desc {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* ===== 字段标签与提示文案 ===== */
+.field > span,
+.field .hint,
+.setting-toggle > span,
+.setting-toggle .hint,
+.retry-setting > span,
+.retry-setting .hint {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* ===== 按钮与选项控件 ===== */
+button,
+.nav-item,
+.nav-subitem,
+.pf-thinking-protocol-option,
+.permission-mode-trigger,
+.permission-model-trigger,
+.pi-btn {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* ===== Provider 列表展示信息 ===== */
+.provider-empty,
+.pi-name,
+.pi-default,
+.pi-model,
+.pi-url,
+.provider-form h2 {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* ===== 权限设置展示文案 ===== */
+.permission-setting-copy,
+.permission-setting-copy strong,
+.permission-setting-copy small,
+.permission-setting-heading,
+.permission-info-tooltip,
+.permission-mode-trigger-copy,
+.permission-model-trigger-copy,
+.permission-model-empty {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* ===== 动态下拉菜单（权限模式 / 自动审批模型） ===== */
+.permission-mode-menu-heading,
+.permission-mode-option,
+.permission-mode-option-copy,
+.permission-mode-option-copy strong,
+.permission-mode-option-copy small,
+.permission-model-group-label,
+.permission-model-option,
+.permission-model-option-name,
+.permission-model-option-provider {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* ===== 统计面板标签 ===== */
+.permission-statistics-heading,
+.permission-statistics-heading h2,
+.permission-statistics-panel h2 {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* ===== 插件卡片展示信息（表单控件与描述正文保留可选中） ===== */
+.plugin-card-title-row,
+.plugin-card-meta,
+.plugin-enabled-toggle,
+.plugin-tag,
+.plugin-empty-state,
+.plugin-settings-status {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* ===== 关于页：仓库统计标签禁止选中，链接与正文保留 ===== */
+.github-project-stats,
+.github-project-stat,
+.github-project-stat strong,
+.github-project-stat span,
+.github-project-description {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* ===== 底部保存栏状态文本 ===== */
+.status {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* ===== 兜底：显式恢复可编辑控件与正文的可选中能力 ===== */
+input,
+textarea,
+select,
+[contenteditable="true"] {
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.github-project-name,
+.about-list,
+.about-list li {
+    user-select: text;
+    -webkit-user-select: text;
+}

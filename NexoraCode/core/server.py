@@ -940,6 +940,7 @@ def _local_agent_enabled_value() -> bool:
 @app.route("/settings.css")
 @app.route("/settings-controls.css")
 @app.route("/settings-sections.css")
+@app.route("/settings-noselect.css")
 @app.route("/permissions-settings.css")
 @app.route("/settings.js")
 @app.route("/permissions-settings.js")
