@@ -9,7 +9,14 @@
  * 为什么不能要求「末段必须是正文」:
  *   工具调用后末段变成工具分段,尾标会立刻消失,直到模型重新吐正文才回来,
  *   用户看到的是「工具调用后输出提示小球不见了」。工具行有自己的执行中状态
- *   (节点脉冲 + 执行中徽标),不需要尾标表达,所以尾标应挂在最后一个正文分段上。
+ *   (节点脉冲 + 执行中徽标),但尾标仍需保持可见。
+ *
+ * 为什么尾标要挂在「最后一个分段」而不是「最后一个正文分段」:
+ *   分段序列常是「正文A → 工具 → 正文B → 工具」,若固定挂在最后一个正文分段,
+ *   尾标会停留在正文B 的尾部,而工具卡片渲染在它下方 —— 视觉上光标被工具卡片
+ *   「甩在后面」,不再是内容末尾。用户期望光标始终跟随最下方输出。
+ *   因此:末段是正文 → 挂在末段;末段是工具 → 仍挂在末段(工具卡片之后),
+ *   保证尾标始终位于整条消息的最底部。
  *
  * 为什么不读消息级的 pending:
  *   云端 Remote 主区由会话级运行态驱动尾标(RemoteTaskPanel.isLiveAssistant),
@@ -35,9 +42,14 @@ export interface CaretOptions {
 /**
  * 计算尾标应挂载的分段下标;返回 -1 表示不显示尾标。
  *
+ * 挂载规则:
+ *   - 末段是正文 → 挂在末段(正文尾部闪烁光标)
+ *   - 末段是工具 → 仍挂在末段,使光标位于工具卡片之后、整条消息最底部,
+ *     不会因工具调用而被"甩"在上一段正文尾部
+ *
  * 不显示的情况:
  *   - 不在流式中 / 正文已输出完毕
- *   - 整条消息还没有任何正文分段(此时由 legacy pending ● 兜底)
+ *   - 整条消息还没有任何分段(此时由 legacy pending ● 兜底)
  */
 export function resolveStreamCaretIndex(
     segments: Array<CaretSegment>,
@@ -47,15 +59,9 @@ export function resolveStreamCaretIndex(
         return -1
     }
 
-    if (!Array.isArray(segments)) {
+    if (!Array.isArray(segments) || segments.length === 0) {
         return -1
     }
 
-    for (let index = segments.length - 1; index >= 0; index -= 1) {
-        if (segments[index].type === 'content') {
-            return index
-        }
-    }
-
-    return -1
+    return segments.length - 1
 }

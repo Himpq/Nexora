@@ -99,7 +99,7 @@ export interface MessageItemRenderContext {
     reasoningTitle: (segment: MessageSegment, sourceIndex: number) => string
     setReasoningTitleRef: (segmentIndex: number, el: unknown) => void
 
-    isTailContent: (item: TextRenderItem) => boolean
+    isTailContent: (item: TextRenderItem | ToolRenderItem) => boolean
 
     isToolExpanded: (item: ToolRenderItem) => boolean
     toggleTool: (item: ToolRenderItem) => void

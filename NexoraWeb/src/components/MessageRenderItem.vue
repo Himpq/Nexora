@@ -201,6 +201,12 @@
                 @knowledge-reference="ctx.handleKnowledgeReference"
             />
         </div>
+
+        <!--
+            工具分段作为消息末段时,光标挂在这里(见 streamCaret.ts 的挂载规则)。
+            必须放在本分支最末尾(地图卡片之后),才是整条消息真正的"最下方"。
+        -->
+        <span v-if="ctx.isTailContent(item)" class="stream-caret" aria-hidden="true"></span>
     </template>
 </template>
 

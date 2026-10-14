@@ -1154,12 +1154,12 @@
     }
 
     /**
-     * 正文流式尾标:定位「最后一个正文分段」,而不是「最后一个分段」。
+     * 正文流式尾标:定位「最后一个分段」,保证光标始终在整条消息最下方。
      *
-     * 工具轮里分段末尾是 function_call / function_result,若要求末段必须是
-     * content,则每次工具调用后尾标都会消失,直到模型重新吐正文才回来 ——
-     * 表现为「工具调用后输出提示小球不见了」。工具行有自己的执行中状态,
-     * 不需要靠尾标表达,所以尾标应当挂在最后一个正文分段上。
+     * 工具轮里分段末尾是 function_call / function_result。若把尾标固定挂在
+     * 「最后一个正文分段」上,光标会停留在上一段正文尾部,而工具卡片渲染在
+     * 它下方 —— 视觉上光标被工具卡片甩在后面,不再是内容末尾。
+     * 因此尾标统一挂末段:末段是正文就挂正文,末段是工具就挂工具之后。
      *
      * 不读 message.pending:云端 Remote 主区的 pending 会被 queue_turn_end /
      * done 帧的定稿置为 false,上一轮收尾时当前气泡的 pending 可能已变 false,
@@ -1170,15 +1170,30 @@
         outputFinished: !!props.message.outputFinished,
     }))
 
-    function isTailContent(item: TextRenderItem): boolean {
+    function isTailContent(item: TextRenderItem | ToolRenderItem): boolean {
         return item.sourceIndex === tailContentIndex.value
     }
 
     /**
-     * 正文流式尾标是否正在显示(尾部分段为正文且生成中):
+     * 正文流式尾标是否正在显示:
      * 此时隐藏 legacy pending ●,避免与 stream-caret 两个闪烁指示重复。
+     *
+     * 必须与「实际会渲染 .stream-caret 的分支」严格一致 —— 目前只有
+     * content 与 tool 两个分支渲染光标。若末段是 reasoning / compression /
+     * injection 等不渲染光标的项,这里必须为 false,否则圆点被隐藏、
+     * 光标又不渲染,用户会看到「两个指示都不见了」。
      */
-    const streamCaretActive = computed(() => tailContentIndex.value >= 0)
+    const streamCaretActive = computed(() => {
+        const index = tailContentIndex.value
+
+        if (index < 0) {
+            return false
+        }
+
+        const item = renderItems.value.find((candidate) => candidate.sourceIndex === index)
+
+        return item?.kind === 'content' || item?.kind === 'tool'
+    })
 
     // 新一轮流式开始时分段被清空:重置手动折叠记录,避免旧状态影响新思考块/工具徽标
     watch(() => contentSegments.value.length, (length) => {
