@@ -1213,7 +1213,12 @@ def _execute_resumed_tool(
     success = bool(execution.get("success", False))
 
     if not success:
-        _LOGGER.error("[LocalAgent] resume_tool_failed conversation=%s tool=%s", conversation_id, tool_name)
+        _LOGGER.error(
+            "[LocalAgent] resume_tool_failed conversation=%s tool=%s error=%s",
+            conversation_id,
+            tool_name,
+            str(execution.get("error") or detail.get("error") or "unknown"),
+        )
         return False, ""
 
     from .Present import present_tool_result

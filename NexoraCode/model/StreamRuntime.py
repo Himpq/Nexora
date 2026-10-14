@@ -71,6 +71,11 @@ _MAX_CHUNKS_PER_SESSION = 12000
 # 攒批落盘阈值：攒够这么多事件或任务收尾时写一次文件。
 _JOURNAL_FLUSH_CHUNKS = 64
 _DONE_TTL_SEC = 900
+# cancelling 兜底 TTL：正常取消后 worker 会很快走完 _finish 转 done；
+# 若 worker 因任何原因（provider 卡死、线程异常）没能退出，session 会永久停在
+# cancelling，导致该会话既发不出新消息也无法再次终止。超过此 TTL 强制回收，
+# 让会话恢复可用。取值远大于正常取消耗时，不会误伤真正在收尾的任务。
+_CANCELLING_TTL_SEC = 120
 _CANCEL_SENTINEL = "__STREAM_CANCELLED__"
 _ACCUMULATED_RENDER_CHUNK_TYPES = {
     "content",
@@ -268,11 +273,22 @@ def cleanup_sessions() -> None:
             updated_at = float(s.get("updated_at") or 0)
             age = max(0.0, now - updated_at)
 
-            # running / cancelling 一律不回收：长任务超过任何 TTL 仍在执行，
+            # running 一律不回收：长任务超过任何 TTL 仍在执行，
             # 强制清理会让仍在跑的 worker 失去可续读的 session。worker 结束必经 _finish。
-            if status not in {"running", "cancelling"}:
-                if age > _DONE_TTL_SEC:
+            if status == "running":
+                continue
+
+            # cancelling 已进入终止流程，正常很快转 done；但若 worker 卡死
+            # （如 provider 连接阶段不响应取消），会永久滞留并锁死会话。
+            # 用兜底 TTL 强制回收，让会话恢复可用。
+            if status == "cancelling":
+                if age > _CANCELLING_TTL_SEC:
                     remove_ids.append(sid)
+
+                continue
+
+            if age > _DONE_TTL_SEC:
+                remove_ids.append(sid)
 
         for sid in remove_ids:
             _SESSIONS.pop(sid, None)

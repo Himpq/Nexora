@@ -34,8 +34,19 @@ from core import wintitle
 # WebView2 持久化存储路径（保留 cookie / localStorage，避免每次重新登录）       
 _STORAGE_PATH = get_app_root() / "data" / "webview_storage"
 
+# 本地服务端口每次启动随机分配，窗口 origin 随之变化，WebView 的 localStorage
+# 按 origin 隔离，历史端口留下的存储再也不会被读取，只会无限堆积。
+# 这里在启动时（WebView 尚未持锁）清掉这些孤儿 origin 的 Local Storage /
+# Session Storage / IndexedDB，保留 cookies 与缓存。
+_ORPHAN_STORAGE_SUBDIRS = ("Local Storage", "Session Storage", "IndexedDB")
+_STORAGE_PRUNE_MARKER = "storage_pruned_at"
+
 DEFAULT_NEXORA_URL = ""
 _STOP_POLL = threading.Event()
+# 当前活跃的 WSS 连接引用：退出时主动 close 打断阻塞中的 connect/recv，
+# 否则线程要等满 socket timeout 才会回到循环条件检查 _STOP_POLL。
+_ACTIVE_WS = None
+_ACTIVE_WS_LOCK = threading.Lock()
 _POLL_STARTED = threading.Event()
 _BOOTSTRAP_LOCK = threading.Lock()
 _BOOTSTRAP_IN_FLIGHT = False
@@ -52,6 +63,47 @@ _AUTH_TRACE_HEARTBEAT = str(config.get("auth_trace_heartbeat", False)).strip().l
 _TOOL_CANCEL_LOCK = threading.Lock()
 _CANCELLED_TOOL_TASKS = set()
 _SINGLE_INSTANCE_HANDLE = None
+
+
+def _prune_stale_webview_storage() -> None:
+    """清理孤儿 origin 的 WebView 存储（Local Storage / Session Storage / IndexedDB）。
+
+    本地服务端口每次启动随机分配，窗口 origin 变成 http://127.0.0.1:<新端口>，
+    上一轮端口下的 localStorage 再也不会被读取。不清就会随启动次数无限堆积
+    （实测已积累 40+ 个孤儿 origin）。cookies 与 HTTP 缓存保留，不影响登录态。
+
+    只在 WebView 启动前调用：此时 leveldb 尚未被锁，删除才会成功。
+    """
+    import shutil
+
+    default_dir = _STORAGE_PATH / "EBWebView" / "Default"
+
+    if not default_dir.is_dir():
+        return
+
+    removed = []
+
+    for name in _ORPHAN_STORAGE_SUBDIRS:
+        target = default_dir / name
+
+        if not target.exists():
+            continue
+
+        try:
+            shutil.rmtree(target)
+            removed.append(name)
+        except OSError as exc:
+            # WebView 仍在运行（例如另一实例）时文件被占用，跳过即可，
+            # 下次启动会再试；不阻断启动。
+            _LOGGER.warning("[NexoraCode] prune storage skipped %s: %s", name, exc)
+
+    if removed:
+        print(f"[NexoraCode] pruned stale webview storage: {', '.join(removed)}")
+
+    try:
+        config.set(_STORAGE_PRUNE_MARKER, int(time.time()))
+    except Exception:
+        pass
 
 
 def _mark_tool_task_cancelled(task_id: str) -> bool:
@@ -1395,6 +1447,18 @@ class NexoraWindowApi:
 
     def close_window(self):
         _STOP_POLL.set()
+
+        # 主动关闭活跃 WSS 连接：connect/recv 阻塞期间线程无法感知 _STOP_POLL，
+        # 不 close 的话要等满 socket timeout 才退出，表现为「窗口已关但后台仍在等连接」。
+        with _ACTIVE_WS_LOCK:
+            active_ws = _ACTIVE_WS
+
+        if active_ws is not None:
+            try:
+                active_ws.close()
+            except Exception:
+                pass
+
         try:
             with self._notes_window_lock:
                 nw = self._notes_window
@@ -3250,14 +3314,45 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
     ws_scheme = "wss" if parsed.scheme == "https" else "ws"
     ws_url = f"{ws_scheme}://{parsed.netloc}/ws/agent"
 
+    global _ACTIVE_WS
+
     # 连接失败退避状态：避免云端不可达时每 3 秒刷屏
     retry_printed: dict = {}
     backoff_seconds = 3.0
 
     while not _STOP_POLL.is_set():
+        ws = None
         try:
             ws = websocket.WebSocket()
-            ws.connect(ws_url, timeout=10)
+
+            # 分段连接：每段短超时，段间检查退出信号。单次 connect(timeout=10)
+            # 在云端不可达时要阻塞满 10 秒，期间用户关闭窗口也无法中断，
+            # 线程会「表面已退出、实际仍在等连接超时」。
+            connect_error = None
+
+            while not _STOP_POLL.is_set():
+                try:
+                    ws.connect(ws_url, timeout=3)
+                    connect_error = None
+                    break
+                except websocket.WebSocketTimeoutException as exc:
+                    # 单段超时不代表失败，继续下一段，直到收到退出信号。
+                    connect_error = exc
+                    continue
+                except Exception as exc:
+                    connect_error = exc
+                    break
+
+            if _STOP_POLL.is_set():
+                break
+
+            if connect_error is not None:
+                raise connect_error
+
+            # 注册活跃连接：退出时可被 close_window 主动打断阻塞中的 recv。
+            with _ACTIVE_WS_LOCK:
+                _ACTIVE_WS = ws
+
             ws_send_lock = threading.Lock()
 
             def _send_ws_payload(payload_obj: dict) -> None:
@@ -3269,7 +3364,19 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
                 "type": "auth",
                 "agent_token": agent_token
             })
-            auth_msg = ws.recv()
+            # auth 响应同样要设超时，避免服务端连上却不回包时永久阻塞。
+            ws.settimeout(3)
+
+            while not _STOP_POLL.is_set():
+                try:
+                    auth_msg = ws.recv()
+                    break
+                except websocket.WebSocketTimeoutException:
+                    continue
+
+            if _STOP_POLL.is_set():
+                break
+
             if not auth_msg:
                 raise Exception("Empty auth response")
             auth_resp = json.loads(auth_msg)
@@ -3448,7 +3555,8 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
             if retry_printed.get("first_failure") is not True:
                 retry_printed["first_failure"] = True
                 _LOGGER.error("[NexoraCode WSS] disconnected; retrying with backoff", exc_info=True)
-            time.sleep(backoff_seconds)
+            # 退避分段等待：退出信号到达时立即返回，不再睡满退避时长。
+            _STOP_POLL.wait(backoff_seconds)
             backoff_seconds = min(30.0, backoff_seconds * 2)
             if backoff_seconds >= 30.0:
                 backoff_seconds = 30.0
@@ -3456,6 +3564,11 @@ def _agent_tunnel_loop(registry, agent_token: str, base_url: str):
             if backoff_seconds >= 30.0 and retry_printed.get("last_warn_at", 0) + 30 < time.time():
                 retry_printed["last_warn_at"] = time.time()
                 _LOGGER.error("[NexoraCode WSS] still_disconnected; retrying every 30 seconds")
+        finally:
+            # 无论正常断开还是异常，都注销活跃连接引用，避免 close_window 关闭陈旧 socket。
+            with _ACTIVE_WS_LOCK:
+                if _ACTIVE_WS is ws:
+                    _ACTIVE_WS = None
 
 
 def _acquire_single_instance() -> bool:
@@ -5202,6 +5315,7 @@ def main():
 
     win.events.loaded += on_loaded
     _STORAGE_PATH.mkdir(parents=True, exist_ok=True)
+    _prune_stale_webview_storage()
     webview.start(debug=devtools_enabled, private_mode=False, storage_path=str(_STORAGE_PATH))
     _STOP_POLL.set()
 
