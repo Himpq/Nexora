@@ -68,7 +68,7 @@ TOOL_NAME_ALIASES = {
     "map_calc_straight_distance": "map_calc_distance",
     "mapCalcRoute": "map_calc_route",
     "map_route_plan": "map_calc_route",
-    "mapGeocode": "map_geocode",
+    "mapGeocode": "map_poi_search",
     "mapPoiSearch": "map_poi_search",
     "map_search_place": "map_poi_search",
     "generateImage": "generate_image",
@@ -115,9 +115,7 @@ def canonicalize_tool_name(name):
 
 MAP_TOOL_NAMES = {
     "map_render",
-    "map_calc_distance",
     "map_calc_route",
-    "map_geocode",
     "map_poi_search",
 }
 
@@ -168,9 +166,7 @@ NEXORACODE_PROJECT_EXCLUDED_TOOL_NAMES = {
     "memory_short_update",
     "memory_short_add",
     "map_render",
-    "map_calc_distance",
     "map_calc_route",
-    "map_geocode",
     "map_poi_search",
     "generate_image",
     "send_email",
@@ -182,10 +178,7 @@ NEXORACODE_PROJECT_EXCLUDED_TOOL_NAMES = {
     "server_render_page",
     "arxiv_search",
     "temp_context_read",
-    "temp_context_search",
     "temp_context_list",
-    "temp_context_clear",
-    "client_js_exec",
     "runtime_tool_enable",
     "ask_for_permission",
 }
@@ -489,7 +482,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "map_render",
-            "description": "生成 Nexora 前端可渲染的地图 scene。只负责渲染标记、路线图层和视野，不做真实路线规划；需要计算路线时先调用 map_calc_route。",
+            "description": "生成 Nexora 前端可渲染的地图 scene。只负责渲染标记、路线图层和视野，不做真实路线规划；需要计算路线时先调用 map_calc_route。坐标系由 provider 自动推导，视野默认自动适配全部图层。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -501,10 +494,6 @@ TOOLS = [
                         "type": "string",
                         "enum": ["baidu", "tianditu"],
                         "description": "地图 provider，目前支持 baidu、tianditu"
-                    },
-                    "coordinate_system": {
-                        "type": "string",
-                        "description": "坐标系标记，例如 bd09ll"
                     },
                     "center": {
                         "type": "object",
@@ -558,96 +547,89 @@ TOOLS = [
                             "required": ["points"]
                         }
                     },
-                    "layers": {
-                        "type": "array",
-                        "description": "开放图层数组，支持 marker 和 route。高级场景可直接传 layers。",
-                        "items": {"type": "object"}
-                    },
                     "scene": {
                         "type": "object",
                         "description": "完整 nexora-map scene；提供 scene 时优先使用 scene。"
-                    },
-                    "fit_bounds": {
-                        "type": "boolean",
-                        "description": "是否自动适配所有图层视野，默认 true。"
                     }
                 },
                 "required": []
             }
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "map_calc_distance",
-            "description": "计算两个坐标点之间的球面直线距离和初始方位角，并可返回可渲染地图 scene。只用于直线距离，不代表真实道路距离。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "provider": {
-                        "type": "string",
-                        "enum": ["baidu", "tianditu"],
-                        "description": "地图 provider，目前支持 baidu、tianditu"
-                    },
-                    "origin": {
-                        "type": "object",
-                        "description": "起点，包含 lng 和 lat",
-                        "properties": {
-                            "lng": {"type": "number"},
-                            "lat": {"type": "number"}
-                        },
-                        "required": ["lng", "lat"]
-                    },
-                    "origin_text": {
-                        "type": "string",
-                        "description": "起点文本。提供文本时必须同时提供 origin_city、origin_region 或 city，工具会先做地理编码再计算。"
-                    },
-                    "origin_city": {
-                        "type": "string",
-                        "description": "起点文本所属城市/行政区；origin_text 为文本时必填，例如 南宁、上海。"
-                    },
-                    "origin_region": {
-                        "type": "string",
-                        "description": "起点文本所属行政区；可替代 origin_city。"
-                    },
-                    "destination": {
-                        "type": "object",
-                        "description": "终点，包含 lng 和 lat",
-                        "properties": {
-                            "lng": {"type": "number"},
-                            "lat": {"type": "number"}
-                        },
-                        "required": ["lng", "lat"]
-                    },
-                    "destination_text": {
-                        "type": "string",
-                        "description": "终点文本。提供文本时必须同时提供 destination_city、destination_region 或 city，工具会先做地理编码再计算。"
-                    },
-                    "destination_city": {
-                        "type": "string",
-                        "description": "终点文本所属城市/行政区；destination_text 为文本时必填，例如 南宁、上海。"
-                    },
-                    "destination_region": {
-                        "type": "string",
-                        "description": "终点文本所属行政区；可替代 destination_city。"
-                    },
-                    "city": {
-                        "type": "string",
-                        "description": "起终点在同一城市时使用的统一城市限定；文本地理编码不能省略城市限定。"
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "可选地图标题"
-                    },
-                    "render": {
-                        "type": "boolean",
-                        "description": "是否保存 scene 并让前端根据 map_id 渲染地图，默认 true。false 时只返回基础信息摘要。"
-                    }
-                },
-                "required": []
-            }
-        }
-    },
+    # map_calc_distance 已下线：历史 0 调用，直线距离功能可被 map_calc_route 的真实道路距离覆盖。
+    # 保留旧定义注释，避免后续误恢复为用户可见工具。
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "map_calc_distance",
+    #         "description": "计算两个坐标点之间的球面直线距离和初始方位角，并可返回可渲染地图 scene。只用于直线距离，不代表真实道路距离。",
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "provider": {
+    #                     "type": "string",
+    #                     "enum": ["baidu", "tianditu"],
+    #                     "description": "地图 provider，目前支持 baidu、tianditu"
+    #                 },
+    #                 "origin": {
+    #                     "type": "object",
+    #                     "description": "起点，包含 lng 和 lat",
+    #                     "properties": {
+    #                         "lng": {"type": "number"},
+    #                         "lat": {"type": "number"}
+    #                     },
+    #                     "required": ["lng", "lat"]
+    #                 },
+    #                 "origin_text": {
+    #                     "type": "string",
+    #                     "description": "起点文本。提供文本时必须同时提供 origin_city、origin_region 或 city，工具会先做地理编码再计算。"
+    #                 },
+    #                 "origin_city": {
+    #                     "type": "string",
+    #                     "description": "起点文本所属城市/行政区；origin_text 为文本时必填，例如 南宁、上海。"
+    #                 },
+    #                 "origin_region": {
+    #                     "type": "string",
+    #                     "description": "起点文本所属行政区；可替代 origin_city。"
+    #                 },
+    #                 "destination": {
+    #                     "type": "object",
+    #                     "description": "终点，包含 lng 和 lat",
+    #                     "properties": {
+    #                         "lng": {"type": "number"},
+    #                         "lat": {"type": "number"}
+    #                     },
+    #                     "required": ["lng", "lat"]
+    #                 },
+    #                 "destination_text": {
+    #                     "type": "string",
+    #                     "description": "终点文本。提供文本时必须同时提供 destination_city、destination_region 或 city，工具会先做地理编码再计算。"
+    #                 },
+    #                 "destination_city": {
+    #                     "type": "string",
+    #                     "description": "终点文本所属城市/行政区；destination_text 为文本时必填，例如 南宁、上海。"
+    #                 },
+    #                 "destination_region": {
+    #                     "type": "string",
+    #                     "description": "终点文本所属行政区；可替代 destination_city。"
+    #                 },
+    #                 "city": {
+    #                     "type": "string",
+    #                     "description": "起终点在同一城市时使用的统一城市限定；文本地理编码不能省略城市限定。"
+    #                 },
+    #                 "title": {
+    #                     "type": "string",
+    #                     "description": "可选地图标题"
+    #                 },
+    #                 "render": {
+    #                     "type": "boolean",
+    #                     "description": "是否保存 scene 并让前端根据 map_id 渲染地图，默认 true。false 时只返回基础信息摘要。"
+    #                 }
+    #             },
+    #             "required": []
+    #         }
+    #     }
+    # },
     {
         "type": "function",
         "function": {
@@ -737,49 +719,52 @@ TOOLS = [
             }
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "map_geocode",
-            "description": "把地址解析成坐标，并返回可渲染地图标记。适合用户给出地点文本但后续工具需要经纬度时调用。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "provider": {
-                        "type": "string",
-                        "enum": ["baidu", "tianditu"],
-                        "description": "地图 provider，目前支持 baidu、tianditu"
-                    },
-                    "address": {
-                        "type": "string",
-                        "description": "要解析的地址或地点文本"
-                    },
-                    "city": {
-                        "type": "string",
-                        "description": "必填城市名/行政区，用于限定 provider 的文本地理编码结果，例如 上海、南宁。"
-                    },
-                    "region": {
-                        "type": "string",
-                        "description": "行政区限定；可替代 city。"
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "可选地图标题"
-                    },
-                    "render": {
-                        "type": "boolean",
-                        "description": "是否保存 scene 并让前端根据 map_id 渲染地图，默认 true。false 时只返回坐标信息。"
-                    }
-                },
-                "required": ["address"]
-            }
-        }
-    },
+    # map_geocode 已合并进 map_poi_search：同为「地点文本 → 坐标」能力，
+    # map_poi_search 增加 address 参数后可直接返回单点坐标，无需独立工具。
+    # 保留旧定义注释，避免后续误恢复为用户可见工具。
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "map_geocode",
+    #         "description": "把地址解析成坐标，并返回可渲染地图标记。适合用户给出地点文本但后续工具需要经纬度时调用。",
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "provider": {
+    #                     "type": "string",
+    #                     "enum": ["baidu", "tianditu"],
+    #                     "description": "地图 provider，目前支持 baidu、tianditu"
+    #                 },
+    #                 "address": {
+    #                     "type": "string",
+    #                     "description": "要解析的地址或地点文本"
+    #                 },
+    #                 "city": {
+    #                     "type": "string",
+    #                     "description": "必填城市名/行政区，用于限定 provider 的文本地理编码结果，例如 上海、南宁。"
+    #                 },
+    #                 "region": {
+    #                     "type": "string",
+    #                     "description": "行政区限定；可替代 city。"
+    #                 },
+    #                 "title": {
+    #                     "type": "string",
+    #                     "description": "可选地图标题"
+    #                 },
+    #                 "render": {
+    #                     "type": "boolean",
+    #                     "description": "是否保存 scene 并让前端根据 map_id 渲染地图，默认 true。false 时只返回坐标信息。"
+    #                 }
+    #             },
+    #             "required": ["address"]
+    #         }
+    #     }
+    # },
     {
         "type": "function",
         "function": {
             "name": "map_poi_search",
-            "description": "搜索地点 POI，返回地点列表和可渲染地图标记。必须提供 region，或提供 location + radius。",
+            "description": "地点检索：按关键词搜索 POI 列表，或按 address 精确解析单个地址坐标。必须提供 region，或提供 location + radius。返回地点列表和可渲染地图标记。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -791,6 +776,14 @@ TOOLS = [
                     "query": {
                         "type": "string",
                         "description": "地点关键词，例如 北京南站、咖啡馆"
+                    },
+                    "address": {
+                        "type": "string",
+                        "description": "要精确解析的地址或地点文本。提供 address 时按地理编码返回单点坐标，与 query 二选一。"
+                    },
+                    "city": {
+                        "type": "string",
+                        "description": "address 解析时的城市名/行政区限定，例如 上海、南宁。"
                     },
                     "region": {
                         "type": "string",
@@ -826,7 +819,7 @@ TOOLS = [
                         "description": "是否保存 scene 并让前端根据 map_id 渲染地图，默认 true。false 时只返回地点列表。"
                     }
                 },
-                "required": ["query"]
+                "required": []
             }
         }
     },
@@ -1007,31 +1000,33 @@ TOOLS = [
             }
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "client_js_exec",
-            "description": "在当前聊天页的隔离 JS Worker 中执行纯 JavaScript。适合轻量计算、文本处理和 Canvas 渲染；不能访问 DOM、页面状态或网络。操作真实网页请使用 browser_page_* 工具。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "code": {
-                        "type": "string",
-                        "description": "可直接执行的纯 JS 代码；建议显式 return 结果。"
-                    },
-                    "context": {
-                        "type": "object",
-                        "description": "可选，传入上下文对象，在代码中通过 context 读取。"
-                    },
-                    "timeout_ms": {
-                        "type": "integer",
-                        "description": "可选，执行超时毫秒数，默认8000，范围500-30000。"
-                    }
-                },
-                "required": ["code"]
-            }
-        }
-    },
+    # client_js_exec 已下线：调用量极低（历史 3 次），且与本地 browser_page_eval 职责重叠。
+    # 保留旧定义注释，避免后续误恢复为用户可见工具。
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "client_js_exec",
+    #         "description": "在当前聊天页的隔离 JS Worker 中执行纯 JavaScript。适合轻量计算、文本处理和 Canvas 渲染；不能访问 DOM、页面状态或网络。操作真实网页请使用 browser_page_* 工具。",
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "code": {
+    #                     "type": "string",
+    #                     "description": "可直接执行的纯 JS 代码；建议显式 return 结果。"
+    #                 },
+    #                 "context": {
+    #                     "type": "object",
+    #                     "description": "可选，传入上下文对象，在代码中通过 context 读取。"
+    #                 },
+    #                 "timeout_ms": {
+    #                     "type": "integer",
+    #                     "description": "可选，执行超时毫秒数，默认8000，范围500-30000。"
+    #                 }
+    #             },
+    #             "required": ["code"]
+    #         }
+    #     }
+    # },
     {
         "type": "function",
         "function": {
@@ -1537,43 +1532,45 @@ TOOLS = [
         }
     },
 
-    {
-        "type": "function",
-        "function": {
-            "name": "temp_context_search",
-            "description": "在当前回复作用域的临时长文本缓存中搜索。传 keyword 做普通匹配，传 regex 做正则匹配。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "resource_id": {
-                        "type": "string",
-                        "description": "可选。为空时搜索当前回复作用域内的全部临时资源。"
-                    },
-                    "keyword": {
-                        "type": "string",
-                        "description": "普通搜索关键词。keyword 和 regex 二选一。"
-                    },
-                    "regex": {
-                        "type": "string",
-                        "description": "正则表达式。keyword 和 regex 二选一。"
-                    },
-                    "case_sensitive": {
-                        "type": "boolean",
-                        "description": "是否区分大小写，默认 false。"
-                    },
-                    "range": {
-                        "type": "integer",
-                        "description": "每个命中前后返回的上下文字符数，默认 80。"
-                    },
-                    "max_matches": {
-                        "type": "integer",
-                        "description": "最大返回命中数，默认 20。"
-                    }
-                },
-                "required": []
-            }
-        }
-    },
+    # temp_context_search 已下线：历史 0 调用，temp_context_read 的 offset 分段已覆盖定位需求。
+    # 保留旧定义注释，避免后续误恢复为用户可见工具。
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "temp_context_search",
+    #         "description": "在当前回复作用域的临时长文本缓存中搜索。传 keyword 做普通匹配，传 regex 做正则匹配。",
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "resource_id": {
+    #                     "type": "string",
+    #                     "description": "可选。为空时搜索当前回复作用域内的全部临时资源。"
+    #                 },
+    #                 "keyword": {
+    #                     "type": "string",
+    #                     "description": "普通搜索关键词。keyword 和 regex 二选一。"
+    #                 },
+    #                 "regex": {
+    #                     "type": "string",
+    #                     "description": "正则表达式。keyword 和 regex 二选一。"
+    #                 },
+    #                 "case_sensitive": {
+    #                     "type": "boolean",
+    #                     "description": "是否区分大小写，默认 false。"
+    #                 },
+    #                 "range": {
+    #                     "type": "integer",
+    #                     "description": "每个命中前后返回的上下文字符数，默认 80。"
+    #                 },
+    #                 "max_matches": {
+    #                     "type": "integer",
+    #                     "description": "最大返回命中数，默认 20。"
+    #                 }
+    #             },
+    #             "required": []
+    #         }
+    #     }
+    # },
 
     {
         "type": "function",
@@ -1588,18 +1585,20 @@ TOOLS = [
         }
     },
 
-    {
-        "type": "function",
-        "function": {
-            "name": "temp_context_clear",
-            "description": "清空当前回复作用域中的临时长文本资源。",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
-        }
-    },
+    # temp_context_clear 已下线：历史 0 调用，回复作用域结束时会自动清理。
+    # 保留旧定义注释，避免后续误恢复为用户可见工具。
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "temp_context_clear",
+    #         "description": "清空当前回复作用域中的临时长文本资源。",
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {},
+    #             "required": []
+    #         }
+    #     }
+    # },
     {
         "type": "function",
         "function": {

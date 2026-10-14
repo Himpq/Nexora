@@ -2438,13 +2438,9 @@ class Model(ModelInitializationMixin, MailMixin, UserProfileMemoryMixin):
             "clear_context",
             "server_render_page",
             "map_render",
-            "map_calc_distance",
             "map_calc_route",
-            "map_geocode",
             "map_poi_search",
             "arxiv_search",
-            "js_execute",
-            "client_js_exec",
             "conversation_context_length",
             "conversation_context_read",
             "conversation_context_search",
@@ -2543,39 +2539,12 @@ class Model(ModelInitializationMixin, MailMixin, UserProfileMemoryMixin):
             return json.dumps({"success": False, "message": "tmp cache is unavailable for this reply"}, ensure_ascii=False)
         return json.dumps(store.read(resource_id=resource_id, offset=offset, length=length), ensure_ascii=False)
 
-    def temp_cache_search(
-        self,
-        resource_id: Optional[str] = None,
-        keyword: Optional[str] = None,
-        regex: Optional[str] = None,
-        case_sensitive: bool = False,
-        range_size: int = 80,
-        max_matches: int = 20,
-    ) -> str:
-        store = self._temp_context_store
-        if store is None:
-            return json.dumps({"success": False, "message": "tmp cache is unavailable for this reply"}, ensure_ascii=False)
-        payload = store.search(
-            resource_id=resource_id,
-            keyword=keyword,
-            regex=regex,
-            case_sensitive=case_sensitive,
-            range_size=range_size,
-            max_matches=max_matches,
-        )
-        return json.dumps(payload, ensure_ascii=False)
-
     def temp_cache_list(self) -> str:
         store = self._temp_context_store
         if store is None:
             return json.dumps({"success": True, "count": 0, "items": []}, ensure_ascii=False)
         return json.dumps(store.list_resources(), ensure_ascii=False)
 
-    def temp_cache_clear(self) -> str:
-        store = self._temp_context_store
-        if store is None:
-            return json.dumps({"success": True, "removed": 0}, ensure_ascii=False)
-        return json.dumps(store.clear_scope(), ensure_ascii=False)
     def _sanitize_function_result(self, result: Any, func_name: str) -> str:
         """Tool result sanitization for context safety."""
         if not isinstance(result, str):
@@ -2606,8 +2575,6 @@ class Model(ModelInitializationMixin, MailMixin, UserProfileMemoryMixin):
             "analyze_connections",
             "server_render_page",
             "arxiv_search",
-            "js_execute",
-            "client_js_exec",
             "conversation_context_length",
             "conversation_context_read",
             "conversation_context_search",

@@ -16,7 +16,6 @@ import certifi
 from App.Storage import ChromaStore
 from App.Storage import UserFileSandbox
 from .document_generation import DocumentGenerationService
-from App.Utils import request_client_js_execution
 from basis.Conversation import persist_conversation_image_bytes
 from basis.Conversation.context_reader import ConversationContextReader
 from basis.TokenUsage import build_image_generation_log_context, record_papi_image_generation
@@ -65,12 +64,8 @@ class ToolExecutor:
             "generate_image": self._generate_image,
             "knowledge_search_keyword": self._search_keyword,
             "temp_context_read": self._temp_context_read,
-            "temp_context_search": self._temp_context_search,
             "temp_context_list": self._temp_context_list,
-            "temp_context_clear": self._temp_context_clear,
             "arxiv_search": self._arxiv_search,
-            "js_execute": self._js_execute,
-            "client_js_exec": self._js_execute,
             "memory_profile_read": self._get_user_profile_memory,
             "memory_short_update": self._set_user_profile_memory,
             "knowledge_search_vector": self._vector_search,
@@ -98,7 +93,6 @@ class ToolExecutor:
             "cloud_file_list": self._file_list,
             "cloud_file_remove": self._file_remove,
             "map_render": self._map_render,
-            "map_calc_distance": self._map_calc_distance,
             "map_calc_route": self._map_calc_route,
             "map_geocode": self._map_geocode,
             "map_poi_search": self._map_poi_search,
@@ -161,33 +155,6 @@ class ToolExecutor:
             return None, None, "length 必须大于 0。"
 
         return offset, length, ""
-
-    def _normalize_client_js_code(self, raw_code: Any) -> str:
-        code = str(raw_code or "")
-        if not code:
-            return ""
-        code = code.replace("\ufeff", "")
-        code = code.replace("\u2028", "\n").replace("\u2029", "\n")
-
-        trimmed = code.strip()
-        if trimmed:
-            try:
-                parsed = json.loads(trimmed)
-                if isinstance(parsed, str):
-                    code = parsed
-                elif isinstance(parsed, dict) and isinstance(parsed.get("code"), str):
-                    code = str(parsed.get("code") or "")
-            except Exception:
-                pass
-
-        m = re.match(r"^```(?:javascript|js|jsx|typescript|ts)?\s*([\s\S]*?)\s*```$", str(code).strip(), re.IGNORECASE)
-        if m:
-            code = m.group(1)
-
-        # NFKC can normalize full-width punctuation to ASCII.
-        code = unicodedata.normalize("NFKC", str(code or ""))
-        code = code.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
-        return code.strip()
 
     def _normalize_tool_ids(self, value: Any):
         ids = []
@@ -443,9 +410,6 @@ class ToolExecutor:
     def _map_render(self, args: Dict[str, Any]) -> str:
         return self._get_map_tool_service().render(args)
 
-    def _map_calc_distance(self, args: Dict[str, Any]) -> str:
-        return self._get_map_tool_service().calc_distance(args)
-
     def _map_calc_route(self, args: Dict[str, Any]) -> str:
         return self._get_map_tool_service().calc_route(args)
 
@@ -453,7 +417,13 @@ class ToolExecutor:
         return self._get_map_tool_service().geocode(args)
 
     def _map_poi_search(self, args: Dict[str, Any]) -> str:
-        return self._get_map_tool_service().poi_search(args)
+        safe_args = args if isinstance(args, dict) else {}
+        address = str(safe_args.get("address") or "").strip()
+
+        if address:
+            return self._get_map_tool_service().geocode(safe_args)
+
+        return self._get_map_tool_service().poi_search(safe_args)
 
     def _longterm_plan(self, args: Dict[str, Any]) -> str:
         safe_args = args if isinstance(args, dict) else {}
@@ -935,30 +905,9 @@ class ToolExecutor:
             length=args.get("length", 2000),
         )
 
-    def _temp_context_search(self, args: Dict[str, Any]) -> str:
-        raw_case = args.get("case_sensitive", False)
-        if isinstance(raw_case, bool):
-            case_sensitive = raw_case
-        elif isinstance(raw_case, str):
-            case_sensitive = raw_case.strip().lower() in {"1", "true", "yes", "y", "on"}
-        else:
-            case_sensitive = bool(raw_case)
-        return self.model.temp_cache_search(
-            resource_id=args.get("resource_id"),
-            keyword=args.get("keyword"),
-            regex=args.get("regex"),
-            case_sensitive=case_sensitive,
-            range_size=args.get("range", 80),
-            max_matches=args.get("max_matches", 20),
-        )
-
     def _temp_context_list(self, args: Dict[str, Any]) -> str:
         _ = args
         return self.model.temp_cache_list()
-
-    def _temp_context_clear(self, args: Dict[str, Any]) -> str:
-        _ = args
-        return self.model.temp_cache_clear()
 
     def _build_ssl_context_with_certifi(self):
         """Build SSL context using certifi bundle when available."""
@@ -1222,48 +1171,6 @@ class ToolExecutor:
             "items": items,
         }
         return json.dumps(payload, ensure_ascii=False)
-
-    def _js_execute(self, args: Dict[str, Any]) -> str:
-        raw_code = args.get("code")
-        code = self._normalize_client_js_code(raw_code)
-        if not code:
-            return json.dumps({"success": False, "message": "missing code"}, ensure_ascii=False)
-        if len(code) > 20000:
-            return json.dumps({"success": False, "message": "code too long (max 20000 chars)"}, ensure_ascii=False)
-
-        timeout_ms = args.get("timeout_ms", 8000)
-        try:
-            timeout_ms = int(timeout_ms)
-        except Exception:
-            timeout_ms = 8000
-        timeout_ms = min(max(timeout_ms, 500), 30000)
-
-        context = args.get("context", {})
-        if not isinstance(context, dict):
-            context = {}
-        if len(json.dumps(context, ensure_ascii=False, default=str)) > 50000:
-            return json.dumps({"success": False, "message": "context too large"}, ensure_ascii=False)
-
-        conversation_id = str(getattr(self.model, "conversation_id", "") or "").strip()
-        username = str(getattr(self.model, "username", "") or "").strip()
-        if not conversation_id:
-            return json.dumps(
-                {"success": False, "message": "missing conversation_id for client js execution"},
-                ensure_ascii=False
-            )
-        if not username:
-            return json.dumps({"success": False, "message": "missing username"}, ensure_ascii=False)
-
-        payload = request_client_js_execution(
-            username=username,
-            conversation_id=conversation_id,
-            code=code,
-            context=context,
-            timeout_ms=timeout_ms,
-        )
-        if str(raw_code or "") != code:
-            payload["code_normalized"] = True
-        return json.dumps(payload, ensure_ascii=False, default=str)
 
     def _vector_search(self, args: Dict[str, Any]) -> str:
         query = args.get("query", "")

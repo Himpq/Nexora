@@ -54,16 +54,12 @@ class ToolResultPresenter:
             "clear_context": self._render_local_long_context_clear,
             "server_render_page": self._render_server_render_page,
             "map_render": self._render_map_result,
-            "map_calc_distance": self._render_map_result,
             "map_calc_route": self._render_map_result,
-            "map_geocode": self._render_map_result,
             "map_poi_search": self._render_map_result,
             "arxiv_search": self._render_arxiv_search,
             "search": self._render_unified_search,
             "exa_web_search": self._render_exa_web_search,
             "exa_get_contents": self._render_exa_get_contents,
-            "js_execute": self._render_js_execute,
-            "client_js_exec": self._render_js_execute,
             "cloud_file_search_semantic": self._render_file_semantic_search,
             "conversation_context_length": self._render_context_length,
             "conversation_context_read": self._render_context,
@@ -2202,50 +2198,6 @@ class ToolResultPresenter:
                 lines.extend(["", "#### Summary", "", self._markdown_body(summary, limit=2500)])
         if len(items) > 20:
             lines.extend(["", f"... omitted {len(items) - 20} more papers ..."])
-        return "\n".join(lines).strip()
-
-    def _render_js_execute(self, args: Dict[str, Any], result: Any) -> str:
-        payload = self._load_payload(result)
-
-        if isinstance(payload, dict) and payload.get("tmp_cached"):
-            return self._render_cached_payload("js_execute", payload)
-
-        if not isinstance(payload, dict):
-            return str(result or "")
-
-        success = payload.get("success", True) is not False and not payload.get("error")
-        lines = [
-            self._status_title(success, "## JavaScript Executed", "## JavaScript Execution Failed"),
-            "",
-            f"- Executed On: `{payload.get('executed_on', 'client_js')}`",
-        ]
-        if payload.get("elapsed_ms") is not None:
-            lines.append(f"- Elapsed: {payload.get('elapsed_ms')} ms")
-        if payload.get("request_id"):
-            lines.append(f"- Request ID: `{payload.get('request_id')}`")
-        if payload.get("code_normalized") or (isinstance(payload.get("meta"), dict) and payload.get("meta", {}).get("code_normalized")):
-            lines.append("- Code Normalized: yes")
-
-        if args.get("code"):
-            lines.extend(["", "### Code", "", self._fenced_text(args.get("code"), language="javascript", limit=4000)])
-
-        logs = payload.get("logs") if isinstance(payload.get("logs"), list) else []
-        if logs:
-            lines.extend(["", "### Console", "", self._fenced_text("\n".join(str(x) for x in logs), language="text", limit=5000)])
-
-        if not success:
-            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
-
-        if "result" in payload and payload.get("result") is not None:
-            value = payload.get("result")
-            if isinstance(value, (dict, list)):
-                body = json.dumps(value, ensure_ascii=False, indent=2)
-                language = "json"
-            else:
-                body = str(value)
-                language = "text"
-            lines.extend(["", "### Result", "", self._fenced_text(body, language=language, limit=8000)])
-
         return "\n".join(lines).strip()
 
     def _render_file_semantic_search(self, args: Dict[str, Any], result: Any) -> str:
