@@ -1218,6 +1218,12 @@
       ]
     ],
     [
+      "/api/nexoracode/telemetry/events",
+      [
+        "POST"
+      ]
+    ],
+    [
       "/api/notes/store",
       [
         "GET"
