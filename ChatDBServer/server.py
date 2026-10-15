@@ -4002,6 +4002,10 @@ JS_BUNDLE_MANIFEST = {
     "public-site-landing": (
         "static/js/public_site/site.js",
     ),
+    "public-site-introduce": (
+        "static/js/public_site/site.js",
+        "static/js/public_site/introduce.js",
+    ),
     "public-site-rank": (
         "static/js/secure_render.js",
         "static/js/public_site/site.js",
@@ -4142,8 +4146,8 @@ def index():
 
 @app.route('/introduce')
 def introduce_page():
-    """公开介绍页"""
-    return render_template('public_site/landing.html')
+    """公开介绍页：Nexora / NexoraCode / NexoraLearning 三项目总览"""
+    return render_template('public_site/introduce.html')
 
 
 @app.route('/nl_introduce')

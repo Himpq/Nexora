@@ -1,0 +1,907 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nexora | 项目介绍</title>
+    <meta name="description" content="Nexora 是一个开源、可自托管的 AI 工作台，由三个项目组成：Nexora 平台内核、NexoraCode 本地执行体、NexoraLearning 学习系统。">
+    <meta property="og:title" content="Nexora | 项目介绍">
+    <meta property="og:description" content="模型、知识库与本地执行，放进同一套系统。">
+    <meta property="og:type" content="website">
+    <link rel="stylesheet" href="/static/css/public_site/introduce.css?v=20261015_introduce_page_01">
+</head>
+<body id="top">
+    <a class="skip-link" href="#main">跳到正文</a>
+
+    <header class="site-header">
+        <a class="brand" href="/" aria-label="Nexora 首页">Nexora<span class="brand-mark" aria-hidden="true"></span></a>
+
+        <nav class="main-nav" aria-label="主导航">
+            <div class="nav-menu-group">
+                <a class="nav-link nav-trigger" href="#projects" aria-haspopup="true" aria-current="page">
+                    <span>项目</span>
+                    <svg class="nav-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5"/></svg>
+                </a>
+
+                <div class="nav-dropdown">
+                    <div class="nav-dropdown-inner">
+                        <section class="nav-dropdown-primary" aria-label="三个项目">
+                            <p class="nav-dropdown-label">三个项目</p>
+                            <div class="nav-mega-list">
+                                <a class="nav-mega-link" href="#nexora"><span>Nexora</span><em>平台内核</em></a>
+                                <a class="nav-mega-link" href="#nexoracode"><span>NexoraCode</span><em>本地执行体</em></a>
+                                <a class="nav-mega-link" href="#nexoralearning"><span>NexoraLearning</span><em>学习系统</em></a>
+                            </div>
+                        </section>
+
+                        <section class="nav-dropdown-secondary" aria-label="仓库与运行">
+                            <p class="nav-dropdown-label">仓库与运行</p>
+                            <div class="nav-mega-list">
+                                <a class="nav-mega-link" href="#stack"><span>组件矩阵</span><em>内核与组件</em></a>
+                                <a class="nav-mega-link" href="#start"><span>快速开始</span><em>启动命令</em></a>
+                                <a class="nav-mega-link" href="/status"><span>服务状态</span><em>运行视图</em></a>
+                                <a class="nav-mega-link" href="/rank"><span>模型榜单</span><em>Provider</em></a>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+
+            <div class="nav-menu-group">
+                <a class="nav-link" href="#principles">设计取舍</a>
+            </div>
+            <div class="nav-menu-group">
+                <a class="nav-link" href="#start">快速开始</a>
+            </div>
+            <div class="nav-menu-group">
+                <a class="nav-link" href="#releases">发布日志</a>
+            </div>
+            <div class="nav-menu-group">
+                <a class="nav-link" href="/blog">博客</a>
+            </div>
+        </nav>
+
+        <div class="header-actions">
+            <a class="header-link" href="https://github.com/Himpq/Nexora" target="_blank" rel="noopener">GitHub</a>
+            <a class="header-cta" href="/login">进入工作台</a>
+        </div>
+    </header>
+
+    <main id="main">
+        <!-- ========================= 首屏 ========================= -->
+        <section class="hero">
+            <div class="shell hero-grid">
+                <div class="hero-copy reveal">
+                    <p class="eyebrow">Open Source · Self-hosted · Multi-provider</p>
+                    <h1>把模型、知识库与本地执行，<br>放进同一套系统。</h1>
+                    <p class="hero-lead">
+                        Nexora 是一个开源、可自托管的 AI 工作台，由三个项目组成：
+                        <b>Nexora</b> 负责平台内核，<b>NexoraCode</b> 把执行落到你自己的电脑，
+                        <b>NexoraLearning</b> 把教材变成可追踪的学习路径。
+                        三者共用同一份账号、模型与权限配置。
+                    </p>
+
+                    <div class="btn-row">
+                        <a class="btn btn-ink" href="/login">
+                            <span>进入工作台</span>
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M9 7h8v8"/></svg>
+                        </a>
+                        <a class="btn btn-line" href="https://github.com/Himpq/Nexora" target="_blank" rel="noopener">
+                            <span>查看源码</span>
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M9 7h8v8"/></svg>
+                        </a>
+                    </div>
+
+                    <dl class="hero-meta">
+                        <div>
+                            <dt>Provider 适配</dt>
+                            <dd>DashScope / OpenAI / Volcengine / Ollama / vLLM</dd>
+                        </div>
+                        <div>
+                            <dt>交付形态</dt>
+                            <dd>网页 · Windows 桌面 · 鸿蒙 · Android</dd>
+                        </div>
+                        <div>
+                            <dt>许可</dt>
+                            <dd>GPL-3.0，可自行部署与改造</dd>
+                        </div>
+                    </dl>
+                </div>
+
+                <figure class="hero-visual reveal">
+                    <svg viewBox="0 0 560 320" role="img" aria-label="Nexora 三个项目共享同一套内核与组件的关系图">
+                        <!-- 三个项目 -->
+                        <rect class="dg-box" x="12" y="16" width="164" height="52" rx="8"/>
+                        <text class="dg-label" x="26" y="39">Nexora</text>
+                        <text class="dg-sub" x="26" y="56">平台内核</text>
+
+                        <rect class="dg-box" x="198" y="16" width="164" height="52" rx="8"/>
+                        <text class="dg-label" x="212" y="39">NexoraCode</text>
+                        <text class="dg-sub" x="212" y="56">本地执行体</text>
+
+                        <rect class="dg-box" x="384" y="16" width="164" height="52" rx="8"/>
+                        <text class="dg-label" x="398" y="39">NexoraLearning</text>
+                        <text class="dg-sub" x="398" y="56">学习系统</text>
+
+                        <!-- 项目 → 内核 -->
+                        <path class="dg-link-flow" d="M94 68V112"/>
+                        <path class="dg-link-flow" d="M280 68V112"/>
+                        <path class="dg-link-flow" d="M466 68V112"/>
+                        <rect class="dg-node" x="91.5" y="109.5" width="5" height="5"/>
+                        <rect class="dg-node" x="277.5" y="109.5" width="5" height="5"/>
+                        <rect class="dg-node" x="463.5" y="109.5" width="5" height="5"/>
+
+                        <!-- 共享内核 -->
+                        <rect class="dg-core" x="12" y="112" width="536" height="76" rx="10"/>
+                        <text class="dg-sub" x="28" y="136">Shared Core</text>
+                        <text class="dg-label" x="28" y="163">账号 · 模型配置 · 权限 · 用量观测</text>
+                        <text class="dg-note" x="532" y="163" text-anchor="end">ChatDBServer</text>
+
+                        <!-- 内核 → 组件 -->
+                        <path class="dg-link-flow" d="M70 188V252"/>
+                        <path class="dg-link-flow" d="M210 188V252"/>
+                        <path class="dg-link-flow" d="M350 188V252"/>
+                        <path class="dg-link-flow" d="M490 188V252"/>
+                        <rect class="dg-node" x="67.5" y="185" width="5" height="5"/>
+                        <rect class="dg-node" x="207.5" y="185" width="5" height="5"/>
+                        <rect class="dg-node" x="347.5" y="185" width="5" height="5"/>
+                        <rect class="dg-node" x="487.5" y="185" width="5" height="5"/>
+
+                        <text class="dg-note" x="280" y="224" text-anchor="middle">可解耦组件</text>
+
+                        <!-- 组件 -->
+                        <rect class="dg-box" x="10" y="252" width="120" height="48" rx="8"/>
+                        <text class="dg-label" x="24" y="280">NexoraDB</text>
+
+                        <rect class="dg-box" x="150" y="252" width="120" height="48" rx="8"/>
+                        <text class="dg-label" x="164" y="280">NexoraMail</text>
+
+                        <rect class="dg-box" x="290" y="252" width="120" height="48" rx="8"/>
+                        <text class="dg-label" x="304" y="280">Netdisk</text>
+
+                        <rect class="dg-box" x="430" y="252" width="120" height="48" rx="8"/>
+                        <text class="dg-label" x="444" y="280">Search</text>
+                    </svg>
+                    <figcaption class="fig-caption">图 1 · 三个项目共享同一套内核、账号与可解耦组件</figcaption>
+                </figure>
+            </div>
+        </section>
+
+        <!-- ========================= 01 项目索引 ========================= -->
+        <section class="section" id="projects">
+            <div class="shell section-grid">
+                <div class="rail">
+                    <span class="rail-num">01</span>
+                    <span class="rail-label">三个项目</span>
+                    <span class="rail-rule" aria-hidden="true"></span>
+                </div>
+
+                <div class="section-body">
+                    <h2 class="section-title">从平台内核，到本地执行，再到学习路径</h2>
+                    <p class="section-lead">
+                        Nexora 不是一个大而全的应用，而是一组边界清楚的组件：内核负责模型、知识、权限与观测；
+                        本地执行体负责真正碰你的文件与终端；学习系统负责把学习过程变成可追踪的路径与反馈。
+                        你可以只用其中一个，也可以把它们装在同一台机器上。
+                    </p>
+
+                    <div class="project-index">
+                        <a class="index-card reveal" href="#nexora">
+                            <div class="index-top">
+                                <span class="index-num">01 / Nexora</span>
+                                <span class="index-tag">Core</span>
+                            </div>
+                            <h3>Nexora</h3>
+                            <p class="index-desc">平台内核。对话、工具路由、模型接入、知识库、记忆、权限与用量观测都在这里。</p>
+                            <ul class="index-points">
+                                <li>多 Provider 统一接入</li>
+                                <li>RAG 知识库与长期记忆</li>
+                                <li>ACL 与 Token 观测</li>
+                            </ul>
+                            <span class="index-more">查看细节 →</span>
+                        </a>
+
+                        <a class="index-card reveal" href="#nexoracode">
+                            <div class="index-top">
+                                <span class="index-num">02 / NexoraCode</span>
+                                <span class="index-tag">Desktop</span>
+                            </div>
+                            <h3>NexoraCode</h3>
+                            <p class="index-desc">本地执行体。桌面端跑 Agent 循环，读写文件、执行命令、渲染页面，并由你审批危险操作。</p>
+                            <ul class="index-points">
+                                <li>本地 Shell / 文件 / 浏览器工具</li>
+                                <li>模型权限与自动审批</li>
+                                <li>网页与手机远程派发任务</li>
+                            </ul>
+                            <span class="index-more">查看细节 →</span>
+                        </a>
+
+                        <a class="index-card reveal" href="#nexoralearning">
+                            <div class="index-top">
+                                <span class="index-num">03 / NexoraLearning</span>
+                                <span class="index-tag">Learning</span>
+                            </div>
+                            <h3>NexoraLearning</h3>
+                            <p class="index-desc">学习系统。把教材解析成课程结构，用导读、测评与画像把每次学习接续下去。</p>
+                            <ul class="index-points">
+                                <li>教材解析与课程结构</li>
+                                <li>章节导读与阅读后测评</li>
+                                <li>学习画像与动态社区</li>
+                            </ul>
+                            <span class="index-more">查看细节 →</span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========================= 02 Nexora ========================= -->
+        <section class="section" id="nexora">
+            <div class="shell section-grid">
+                <div class="rail">
+                    <span class="rail-num">02</span>
+                    <span class="rail-label">平台内核</span>
+                    <span class="rail-rule" aria-hidden="true"></span>
+                </div>
+
+                <div class="section-body">
+                    <header class="project-head">
+                        <div>
+                            <p class="eyebrow">Platform Core / ChatDBServer</p>
+                            <h2 class="project-title">Nexora</h2>
+                            <p class="project-lead">
+                                统一接入模型、组织知识与工具的对话内核。模型、向量库、邮件、搜索、网盘都是可替换组件，
+                                因此你可以只跑内核，也可以把每一项换成自己的实现。
+                            </p>
+                        </div>
+
+                        <ul class="spec-list">
+                            <li><span>目录</span><code>ChatDBServer/</code></li>
+                            <li><span>启动</span><code>python server.py</code></li>
+                            <li><span>运行时</span><code>Flask · Python · SQLite</code></li>
+                            <li><span>状态</span><em>主线运行</em></li>
+                        </ul>
+                    </header>
+
+                    <div class="feature-grid">
+                        <article class="feature reveal">
+                            <span class="feature-index">01</span>
+                            <h3>多 Provider 统一接入</h3>
+                            <p>DashScope、OpenAI、Volcengine、Ollama、vLLM 走同一套接口，模型参数与超额策略集中维护。</p>
+                        </article>
+                        <article class="feature reveal">
+                            <span class="feature-index">02</span>
+                            <h3>知识库与 RAG</h3>
+                            <p>文本与文件向量化存入 <code>NexoraDB</code>，支持知识库管理、知识图谱与协作编辑。</p>
+                        </article>
+                        <article class="feature reveal">
+                            <span class="feature-index">03</span>
+                            <h3>工具按需注入</h3>
+                            <p>工具选择权交给模型，不再一次性注入全部工具；Auto / Force 模式可切换，长会话更省 Token。</p>
+                        </article>
+                        <article class="feature reveal">
+                            <span class="feature-index">04</span>
+                            <h3>记忆与上下文</h3>
+                            <p>会话记忆、长期记忆与上下文预算统一管理，跨会话继续同一件事时有据可依。</p>
+                        </article>
+                        <article class="feature reveal">
+                            <span class="feature-index">05</span>
+                            <h3>权限与可观测</h3>
+                            <p>用户、角色与模型可见性按 ACL 分配；Token 消耗与对话日志按用户、模型、时间维度统计。</p>
+                        </article>
+                        <article class="feature reveal">
+                            <span class="feature-index">06</span>
+                            <h3>邮件与网盘绑定</h3>
+                            <p><code>NexoraMail</code> 账号与平台用户统一绑定，注册、找回与通知走同一条链路；文件走 <code>NexoraNetdisk</code>。</p>
+                        </article>
+                    </div>
+
+                    <figure class="wire">
+                        <div class="wire-bar">
+                            <span class="wire-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                            <span class="wire-title">工作台结构示意</span>
+                            <span class="wire-tag">/new</span>
+                        </div>
+
+                        <div class="wire-body">
+                            <aside class="wire-side" aria-label="能力入口示意">
+                                <span class="wire-item is-active">会话</span>
+                                <span class="wire-item">知识库</span>
+                                <span class="wire-item">文件</span>
+                                <span class="wire-item">笔记</span>
+                                <span class="wire-item">模型</span>
+                                <span class="wire-item">设置</span>
+                            </aside>
+
+                            <div class="wire-main" aria-hidden="true">
+                                <div class="wire-head">
+                                    <span class="wire-pill">Provider / 模型可选</span>
+                                    <span class="wire-head-line"></span>
+                                </div>
+
+                                <div class="wire-msg wire-msg-user"><span></span></div>
+
+                                <div class="wire-msg">
+                                    <span></span>
+                                    <span></span>
+                                    <span class="short"></span>
+                                </div>
+
+                                <div class="wire-tools">
+                                    <span>工具按需注入</span>
+                                    <span>Auto / Force</span>
+                                    <span>知识命中</span>
+                                    <span>记忆</span>
+                                </div>
+
+                                <div class="wire-input">
+                                    <span></span>
+                                    <b>发送</b>
+                                </div>
+                            </div>
+                        </div>
+
+                        <figcaption class="fig-caption">图 2 · 结构示意：左侧是能力入口，右侧是对话、工具注入与知识命中的过程</figcaption>
+                    </figure>
+
+                    <div class="chip-row">
+                        <span class="chip">RAG</span>
+                        <span class="chip">知识图谱</span>
+                        <span class="chip">长期记忆</span>
+                        <span class="chip">工具路由</span>
+                        <span class="chip">PAPI 密钥</span>
+                        <span class="chip">笔记</span>
+                        <span class="chip">Token 观测</span>
+                        <span class="chip">模型榜单</span>
+                    </div>
+
+                    <div class="project-actions">
+                        <a class="btn btn-ink" href="/login">
+                            <span>进入工作台</span>
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M9 7h8v8"/></svg>
+                        </a>
+                        <a class="btn btn-quiet" href="/rank">查看模型榜单</a>
+                        <a class="btn btn-quiet" href="/status">服务状态</a>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========================= 03 NexoraCode ========================= -->
+        <section class="section" id="nexoracode">
+            <div class="shell section-grid">
+                <div class="rail">
+                    <span class="rail-num">03</span>
+                    <span class="rail-label">本地执行体</span>
+                    <span class="rail-rule" aria-hidden="true"></span>
+                </div>
+
+                <div class="section-body">
+                    <header class="project-head">
+                        <div>
+                            <p class="eyebrow">Desktop Runtime / Windows</p>
+                            <h2 class="project-title">NexoraCode</h2>
+                            <p class="project-lead">
+                                跑在你自己电脑上的执行体。Agent 循环、模型配置与工具权限全部留在本地：
+                                它读你的文件、跑你的命令、渲染你的页面，而危险操作需要你点同意。
+                            </p>
+                        </div>
+
+                        <ul class="spec-list">
+                            <li><span>目录</span><code>NexoraCode/</code></li>
+                            <li><span>形态</span><code>Windows 桌面应用</code></li>
+                            <li><span>通信</span><code>WebSocket · 设备配对</code></li>
+                            <li><span>状态</span><em>NexoraCode V4.0</em></li>
+                        </ul>
+                    </header>
+
+                    <div class="link-map">
+                        <div class="link-cell">
+                            <span class="link-cell-tag">Local</span>
+                            <h4>你的电脑</h4>
+                            <p>本地配置 Provider 与模型，Agent 循环、文件读写、终端与浏览器工具都在本机执行。</p>
+                        </div>
+                        <div class="link-cell is-core">
+                            <span class="link-cell-tag">Cloud · Identity Only</span>
+                            <h4>Nexora 云端</h4>
+                            <p>只做身份校验与即时转发：配对码、连接和等待中的请求都在内存里，不持久化会话内容与执行事件。</p>
+                        </div>
+                        <div class="link-cell">
+                            <span class="link-cell-tag">Remote</span>
+                            <h4>手机与网页</h4>
+                            <p>同一账号登录后，在网页 Projects 或移动端侧栏选择在线电脑，发起新任务或继续已有会话。</p>
+                        </div>
+                    </div>
+
+                    <div class="feature-grid">
+                        <article class="feature reveal">
+                            <span class="feature-index">01</span>
+                            <h3>本地工具链</h3>
+                            <p>Shell 与终端、文件读写、代码扫描、浏览器页面渲染与操作、图片搜索、进程管理。</p>
+                        </article>
+                        <article class="feature reveal">
+                            <span class="feature-index">02</span>
+                            <h3>权限与自动审批</h3>
+                            <p>按工具与路径授权，敏感操作弹窗确认；常用动作可交给自动审批策略，少打断心流。</p>
+                        </article>
+                        <article class="feature reveal">
+                            <span class="feature-index">03</span>
+                            <h3>上下文压缩</h3>
+                            <p>按模型窗口预算本地压缩已完成轮次，原始历史不删除，可用 <code>local_context_search</code> 回溯。</p>
+                        </article>
+                        <article class="feature reveal">
+                            <span class="feature-index">04</span>
+                            <h3>远程任务与回放</h3>
+                            <p>每个请求带固定 <code>request_id</code>，重试不会重复执行；断线重连后可补取执行事件。</p>
+                        </article>
+                        <article class="feature reveal">
+                            <span class="feature-index">05</span>
+                            <h3>本地插件</h3>
+                            <p>从 <code>plugins/</code> 加载受信任插件，可注册工具与自有面板，数据与服务端分开存放。</p>
+                        </article>
+                        <article class="feature reveal">
+                            <span class="feature-index">06</span>
+                            <h3>错误自动重试</h3>
+                            <p>长任务遇到瞬时失败自动重试，任务中断会明确标记，不会静默丢失上下文。</p>
+                        </article>
+                    </div>
+
+                    <div class="release">
+                        <div>
+                            <h3 class="release-title">
+                                NexoraCode
+                                <span class="release-version">v4.0</span>
+                            </h3>
+                            <p class="release-note">
+                                本地独立应用：可脱离云端 URL 使用，本地配置 Provider 模型；新增模型权限管理与自动审批、
+                                新界面与错误自动重试；与 Nexora 云端配合时，可在网页操控本地电脑。
+                            </p>
+                            <ul class="release-facts">
+                                <li>Windows x64</li>
+                                <li>约 54 MB</li>
+                                <li>发布于 2026-10-11</li>
+                                <li>GPL-3.0</li>
+                            </ul>
+                        </div>
+
+                        <div class="btn-row">
+                            <a class="btn btn-ink" href="https://github.com/Himpq/Nexora/releases/download/NexoraCode_v4.0/NexoraCode.exe">
+                                <span>下载 NexoraCode</span>
+                                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14"/></svg>
+                            </a>
+                            <a class="btn btn-line" href="https://github.com/Himpq/Nexora/releases" target="_blank" rel="noopener">全部版本</a>
+                        </div>
+                    </div>
+
+                    <div class="chip-row">
+                        <span class="chip">AgentLoop</span>
+                        <span class="chip">Shell / Terminal</span>
+                        <span class="chip">本地渲染</span>
+                        <span class="chip">配对码</span>
+                        <span class="chip">事件回放</span>
+                        <span class="chip">插件</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========================= 04 NexoraLearning ========================= -->
+        <section class="section" id="nexoralearning">
+            <div class="shell section-grid">
+                <div class="rail">
+                    <span class="rail-num">04</span>
+                    <span class="rail-label">学习系统</span>
+                    <span class="rail-rule" aria-hidden="true"></span>
+                </div>
+
+                <div class="section-body">
+                    <header class="project-head">
+                        <div>
+                            <p class="eyebrow">Learning System / Flask Service</p>
+                            <h2 class="project-title">NexoraLearning</h2>
+                            <p class="project-lead">
+                                把教材变成可执行的课程。教材解析出结构与任务，阅读、练习、测评与反馈在同一条路径上推进，
+                                学习者随时知道自己在哪里、下一步做什么。
+                            </p>
+                        </div>
+
+                        <ul class="spec-list">
+                            <li><span>目录</span><code>NexoraLearning/</code></li>
+                            <li><span>启动</span><code>python main.py</code></li>
+                            <li><span>接口</span><code>NEXORALEARNING_API.md</code></li>
+                            <li><span>状态</span><em>与内核联动</em></li>
+                        </ul>
+                    </header>
+
+                    <ol class="chain" style="--chain-cols: 4">
+                        <li>
+                            <span class="chain-node">Step 01</span>
+                            <h4>解析教材</h4>
+                            <p>导入教材后自动提炼章节与知识点，生成课程结构与介绍视频。</p>
+                            <span class="chain-arrow" aria-hidden="true">→</span>
+                        </li>
+                        <li>
+                            <span class="chain-node">Step 02</span>
+                            <h4>进入章节</h4>
+                            <p>原文、网络资源与 AI 问答同屏衔接，导读先讲清楚这一章要解决什么。</p>
+                            <span class="chain-arrow" aria-hidden="true">→</span>
+                        </li>
+                        <li>
+                            <span class="chain-node">Step 03</span>
+                            <h4>练习与测评</h4>
+                            <p>阅读后立即接续测评与题库练习，理解程度当场暴露出来。</p>
+                            <span class="chain-arrow" aria-hidden="true">→</span>
+                        </li>
+                        <li>
+                            <span class="chain-node">Step 04</span>
+                            <h4>画像与反馈</h4>
+                            <p>掌握度、练习表现与学习节奏汇成学习画像，给出下一步安排。</p>
+                        </li>
+                    </ol>
+
+                    <div class="feature-grid">
+                        <article class="feature reveal">
+                            <span class="feature-index">01</span>
+                            <h3>教材提炼队列</h3>
+                            <p>粗读模型可配置，教材批量入队提炼，向量化状态与队列快照在管理侧可见。</p>
+                        </article>
+                        <article class="feature reveal">
+                            <span class="feature-index">02</span>
+                            <h3>同屏学习上下文</h3>
+                            <p>教材原文、外部资源与问答记录共享同一份上下文，追问不需要重新交代背景。</p>
+                        </article>
+                        <article class="feature reveal">
+                            <span class="feature-index">03</span>
+                            <h3>题库与模拟练习</h3>
+                            <p>按章节组织题目与试卷，作答结果直接进入反馈链路。</p>
+                        </article>
+                        <article class="feature reveal">
+                            <span class="feature-index">04</span>
+                            <h3>学习画像</h3>
+                            <p>把复杂记录收成几条可执行建议：先补什么、什么时候复习、下一阶段练什么。</p>
+                        </article>
+                        <article class="feature reveal">
+                            <span class="feature-index">05</span>
+                            <h3>学习动态</h3>
+                            <p>用邮箱和公共动态分享问题与心得，讨论与进度留在课程里而不是散落各处。</p>
+                        </article>
+                        <article class="feature reveal">
+                            <span class="feature-index">06</span>
+                            <h3>多端学习</h3>
+                            <p>网页学习工作区与移动端客户端共用同一套学习域接口（<code>ChatApp</code>）。</p>
+                        </article>
+                    </div>
+
+                    <div class="chip-row">
+                        <span class="chip">教材解析</span>
+                        <span class="chip">课程工作区</span>
+                        <span class="chip">阅读后测评</span>
+                        <span class="chip">学习画像</span>
+                        <span class="chip">知识图谱</span>
+                        <span class="chip">介绍视频</span>
+                        <span class="chip">学习动态</span>
+                    </div>
+
+                    <div class="project-actions">
+                        <a class="btn btn-ink" href="/nl_introduce">
+                            <span>了解 NexoraLearning</span>
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M9 7h8v8"/></svg>
+                        </a>
+                        <a class="btn btn-quiet" href="https://github.com/Himpq/Nexora/blob/main/NEXORALEARNING_API.md" target="_blank" rel="noopener">接口文档</a>
+                        <a class="btn btn-quiet" href="https://github.com/Himpq/Nexora/blob/main/NEXORALEARNING_DIALOG_API.md" target="_blank" rel="noopener">对话接口</a>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========================= 05 组件矩阵 ========================= -->
+        <section class="section" id="stack">
+            <div class="shell section-grid">
+                <div class="rail">
+                    <span class="rail-num">05</span>
+                    <span class="rail-label">组件矩阵</span>
+                    <span class="rail-rule" aria-hidden="true"></span>
+                </div>
+
+                <div class="section-body">
+                    <h2 class="section-title">内核 + 8 个可以独立部署的组件</h2>
+                    <p class="section-lead">
+                        每个组件都能单独启动、单独替换。内核只依赖你愿意提供的部分，
+                        因此既能在单机上跑完整套，也能把某一块换成已有的服务。
+                    </p>
+
+                    <div class="stack-wrap">
+                        <table class="stack-table">
+                            <thead>
+                                <tr>
+                                    <th scope="col">组件</th>
+                                    <th scope="col">作用</th>
+                                    <th scope="col">目录</th>
+                                    <th scope="col">启动 / 构建</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td class="cell-name">ChatDBServer<small>Nexora 内核</small></td>
+                                    <td>对话、工具路由、模型与用户管理、权限、Token 观测</td>
+                                    <td><code>ChatDBServer/</code></td>
+                                    <td><code>python server.py</code></td>
+                                </tr>
+                                <tr>
+                                    <td class="cell-name">NexoraDB</td>
+                                    <td>基于 ChromaDB 的向量库，提供知识库检索与向量化存储</td>
+                                    <td><code>NexoraDB/</code></td>
+                                    <td><code>python app.py</code> · 默认 8100</td>
+                                </tr>
+                                <tr>
+                                    <td class="cell-name">NexoraMail</td>
+                                    <td>收发邮件，并向模型暴露发信、读信、查收件箱工具</td>
+                                    <td><code>NexoraMail/</code></td>
+                                    <td><code>python NexoraMail.py</code></td>
+                                </tr>
+                                <tr>
+                                    <td class="cell-name">NexoraSearch</td>
+                                    <td>Playwright 驱动的搜索与网页渲染，另有页面解析入口</td>
+                                    <td><code>NexoraSearch/</code></td>
+                                    <td><code>python app.py</code></td>
+                                </tr>
+                                <tr>
+                                    <td class="cell-name">NexoraNetdisk</td>
+                                    <td>文件存储与管理，支持上传、下载、目录与权限操作</td>
+                                    <td><code>NexoraNetdisk/</code></td>
+                                    <td><code>python app.py</code> · 迁移中</td>
+                                </tr>
+                                <tr>
+                                    <td class="cell-name">NexoraWeb</td>
+                                    <td>Vue 3 + Vite 前端，构建产物由内核在 <code>/new</code> 提供</td>
+                                    <td><code>NexoraWeb/</code></td>
+                                    <td><code>npm run build</code></td>
+                                </tr>
+                                <tr>
+                                    <td class="cell-name">NexoraApp / _Android<small>鸿蒙 · Android</small></td>
+                                    <td>ArkTS 客户端；Android 侧按 ArkUI-X 构建</td>
+                                    <td><code>NexoraApp/</code></td>
+                                    <td><code>hvigorw assembleHap</code></td>
+                                </tr>
+                                <tr>
+                                    <td class="cell-name">ChatApp</td>
+                                    <td>Expo / React Native 移动端学习客户端，覆盖课程与学习上下文</td>
+                                    <td><code>ChatApp/</code></td>
+                                    <td><code>npm run start</code></td>
+                                </tr>
+                                <tr>
+                                    <td class="cell-name">NexoraVideoGenerator</td>
+                                    <td>课程与教材介绍视频生成，与学习系统联动</td>
+                                    <td><code>NexoraVideoGenerator/</code></td>
+                                    <td><code>python main.py</code> · 默认 5011</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========================= 06 设计取舍 ========================= -->
+        <section class="section" id="principles">
+            <div class="shell section-grid">
+                <div class="rail">
+                    <span class="rail-num">06</span>
+                    <span class="rail-label">设计取舍</span>
+                    <span class="rail-rule" aria-hidden="true"></span>
+                </div>
+
+                <div class="section-body">
+                    <h2 class="section-title">这几条取舍决定了 Nexora 的样子</h2>
+                    <p class="section-lead">功能可以加，取舍不能含糊。下面四条贯穿内核、桌面端与学习系统。</p>
+
+                    <div class="principle-grid">
+                        <article class="principle reveal">
+                            <span class="principle-num">01</span>
+                            <h3>数据留在自己机器</h3>
+                            <p>文本、向量库与文件默认本地存储，仅在模型调用时访问；云端只承担身份与转发，不长期保存会话内容与执行事件。</p>
+                        </article>
+                        <article class="principle reveal">
+                            <span class="principle-num">02</span>
+                            <h3>Provider 可替换</h3>
+                            <p>项目不提供模型，只提供适配层。换个 Provider 不需要改业务代码，模型可见性也能按用户或角色分配。</p>
+                        </article>
+                        <article class="principle reveal">
+                            <span class="principle-num">03</span>
+                            <h3>工具按需注入</h3>
+                            <p>不一次性把所有工具塞进上下文。模型先选工具，再取定义，长会话因此更省 Token，也更少被无关工具干扰。</p>
+                        </article>
+                        <article class="principle reveal">
+                            <span class="principle-num">04</span>
+                            <h3>执行必须可解释</h3>
+                            <p>危险操作要审批，任务带请求标识与执行日志，压缩过的历史仍可检索。宁可多一步确认，也不让系统静默改动你的机器。</p>
+                        </article>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========================= 07 快速开始 ========================= -->
+        <section class="section" id="start">
+            <div class="shell section-grid">
+                <div class="rail">
+                    <span class="rail-num">07</span>
+                    <span class="rail-label">快速开始</span>
+                    <span class="rail-rule" aria-hidden="true"></span>
+                </div>
+
+                <div class="section-body">
+                    <h2 class="section-title">先跑起来，再决定接哪些组件</h2>
+                    <p class="section-lead">内核是第一个需要启动的组件。用户账号在 <code>ChatDBServer/data/user.json</code> 配置，模型自行用 Ollama 或云厂商提供。</p>
+
+                    <div class="start-grid">
+                        <article class="start-card">
+                            <header>
+                                <span class="start-tag">平台内核</span>
+                                <h3>Nexora</h3>
+                            </header>
+                            <p>克隆仓库并启动内核，浏览器打开输出端口即可进入工作台。</p>
+                            <div class="code-wrap">
+                                <pre><code>git clone https://github.com/Himpq/Nexora.git
+cd Nexora
+pip install -r requirements.txt
+
+cd ChatDBServer
+python server.py</code></pre>
+                                <button class="copy-btn" type="button" data-copy>复制</button>
+                            </div>
+                        </article>
+
+                        <article class="start-card">
+                            <header>
+                                <span class="start-tag">本地执行体</span>
+                                <h3>NexoraCode</h3>
+                            </header>
+                            <p>下载桌面端安装包直接使用；从源码运行时，先在设置里配置 Provider。</p>
+                            <div class="code-wrap">
+                                <pre><code>cd NexoraCode
+pip install -r requirements.txt
+python main.py</code></pre>
+                                <button class="copy-btn" type="button" data-copy>复制</button>
+                            </div>
+                        </article>
+
+                        <article class="start-card">
+                            <header>
+                                <span class="start-tag">学习系统</span>
+                                <h3>NexoraLearning</h3>
+                            </header>
+                            <p>单独启动学习服务，并在内核配置中填入它的地址与 API Key。</p>
+                            <div class="code-wrap">
+                                <pre><code>cd NexoraLearning
+pip install -r requirements.txt
+python main.py</code></pre>
+                                <button class="copy-btn" type="button" data-copy>复制</button>
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========================= 08 发布与日志 ========================= -->
+        <section class="section" id="releases">
+            <div class="shell section-grid">
+                <div class="rail">
+                    <span class="rail-num">08</span>
+                    <span class="rail-label">发布与日志</span>
+                    <span class="rail-rule" aria-hidden="true"></span>
+                </div>
+
+                <div class="section-body">
+                    <h2 class="section-title">最近的进展</h2>
+                    <p class="section-lead">版本发布走 GitHub Releases，日常改动记在 Nexora 博客。</p>
+
+                    <ul class="log-list">
+                        <li class="log-item">
+                            <time datetime="2026-10-11">2026.10.11</time>
+                            <div>
+                                <h3>NexoraCode v4.0 发布</h3>
+                                <p>桌面端成为本地独立应用，本地配置 Provider 模型；新增模型权限管理与自动审批、新界面与错误自动重试。</p>
+                            </div>
+                            <a class="log-scope" href="https://github.com/Himpq/Nexora/releases/tag/NexoraCode_v4.0" target="_blank" rel="noopener">RELEASE →</a>
+                        </li>
+                        <li class="log-item">
+                            <time datetime="2026-10-03">2026.10.03</time>
+                            <div>
+                                <h3>NexoraApp v1.0.2</h3>
+                                <p>鸿蒙客户端版本更新，与内核的登录、模型与会话能力保持同步。</p>
+                            </div>
+                            <a class="log-scope" href="https://github.com/Himpq/Nexora/releases/tag/NexoraApp_v1.0.2" target="_blank" rel="noopener">RELEASE →</a>
+                        </li>
+                        <li class="log-item">
+                            <time datetime="2026-08-11">2026.08.11</time>
+                            <div>
+                                <h3>聊天页前端模块化重构</h3>
+                                <p>前端拆分为独立 ESM 模块，修复跨模块状态所有权，页面加载与交互更稳定。</p>
+                            </div>
+                            <a class="log-scope" href="/blog">BLOG →</a>
+                        </li>
+                        <li class="log-item">
+                            <time datetime="2026-06-25">2026.06.25</time>
+                            <div>
+                                <h3>知识库新增 Patch 修改能力</h3>
+                                <p>内容迭代时可以更直接地定位和更新局部内容，不必整篇重写。</p>
+                            </div>
+                            <a class="log-scope" href="/blog">BLOG →</a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========================= 结尾 ========================= -->
+        <section class="final">
+            <div class="shell">
+                <span class="final-mark">Nexora<span class="brand-mark" aria-hidden="true"></span></span>
+                <h2>把 AI 工作台放回自己的系统</h2>
+                <p>从内核开始，按需接上本地执行体与学习系统。开源、自托管，部署方式由你决定。</p>
+                <div class="btn-row">
+                    <a class="btn btn-ink" href="/login">
+                        <span>进入工作台</span>
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M9 7h8v8"/></svg>
+                    </a>
+                    <a class="btn btn-line" href="https://github.com/Himpq/Nexora" target="_blank" rel="noopener">GitHub 仓库</a>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="site-footer">
+        <div class="shell">
+            <div class="footer-grid">
+                <div>
+                    <div class="footer-brand">Nexora<span class="brand-mark" aria-hidden="true"></span></div>
+                    <p>开源、可自托管的 AI 工作台：内核、本地执行体与学习系统，共用同一套账号与组件。</p>
+                </div>
+
+                <div class="footer-col">
+                    <h4>三个项目</h4>
+                    <ul>
+                        <li><a href="#nexora">Nexora 平台内核</a></li>
+                        <li><a href="#nexoracode">NexoraCode 本地执行体</a></li>
+                        <li><a href="#nexoralearning">NexoraLearning 学习系统</a></li>
+                        <li><a href="/login">进入工作台</a></li>
+                    </ul>
+                </div>
+
+                <div class="footer-col">
+                    <h4>仓库组件</h4>
+                    <ul>
+                        <li><a href="#stack">组件矩阵</a></li>
+                        <li><a href="https://github.com/Himpq/Nexora/tree/main/NexoraDB" target="_blank" rel="noopener">NexoraDB 向量库</a></li>
+                        <li><a href="https://github.com/Himpq/Nexora/tree/main/NexoraMail" target="_blank" rel="noopener">NexoraMail 邮件服务</a></li>
+                        <li><a href="https://github.com/Himpq/Nexora/releases" target="_blank" rel="noopener">版本发布</a></li>
+                    </ul>
+                </div>
+
+                <div class="footer-col">
+                    <h4>运行与文档</h4>
+                    <ul>
+                        <li><a href="#start">快速开始</a></li>
+                        <li><a href="https://github.com/Himpq/Nexora/blob/main/CONFIG.md" target="_blank" rel="noopener">配置说明</a></li>
+                        <li><a href="/status">服务状态</a></li>
+                        <li><a href="/rank">模型榜单</a></li>
+                        <li><a href="/blog">博客</a></li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="footer-base">
+                <span>Nexora · GPL-3.0 · 自托管部署</span>
+                <span>
+                    <a href="https://github.com/Himpq/Nexora" target="_blank" rel="noopener">GitHub</a>
+                    &nbsp;·&nbsp;
+                    <a href="#top">返回顶部</a>
+                </span>
+            </div>
+        </div>
+    </footer>
+
+    <script src="/assets/js/public-site-introduce.js?v=20261015_introduce_page_01"></script>
+</body>
+</html>
