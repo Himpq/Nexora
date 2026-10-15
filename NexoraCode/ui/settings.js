@@ -20,6 +20,7 @@
         providers: [],
         defaultId: "",
         editingId: "",
+        keySourceId: "",
         theme: "system"
     };
 
@@ -44,6 +45,8 @@
 
         return { ok: resp.ok, data: data };
     }
+
+    window.NexoraSettingsApi = { request: api };
 
     // ===== 标题栏 =====
 
@@ -209,39 +212,27 @@
         return selected ? String(selected.dataset.protocol || "") : "";
     }
 
-    function openCreate() {
-        var source = state.providers[0] || null;
-        state.editingId = "";
-        $("pf-title").textContent = source ? "新增模型（复用接入信息）" : "新增 Provider";
+    function collapseAdvancedProviderFields() {
+        $("provider-advanced-fields").open = false;
+    }
 
-        if (source) {
-            // 复用已有 Provider 的接入信息，只需改 Model 名即可添加同服务商的新模型
-            $("pf-name").value = source.name || "";
-            $("pf-base-url").value = source.base_url || "";
-            $("pf-api-key").value = source.api_key || "";
-            $("pf-api-key").placeholder = "可沿用已配置 Key，也可覆盖";
-            $("pf-key-hint").textContent = source.api_key ? "已预填同服务商 Key，可直接使用" : "";
-            $("pf-model").value = "";
-            $("pf-temperature").value = source.temperature != null ? source.temperature : 0.7;
-            $("pf-max-tokens").value = source.max_tokens || 4096;
-            $("pf-context-window").value = source.context_window || 128000;
-            setThinkingProtocol(source.thinking_protocol || "none");
-            $("pf-model").focus();
-        } else {
-            $("pf-name").value = "";
-            $("pf-base-url").value = "";
-            $("pf-api-key").value = "";
-            $("pf-api-key").placeholder = "API Key";
-            $("pf-key-hint").textContent = "";
-            $("pf-model").value = "";
-            $("pf-temperature").value = 0.7;
-            $("pf-max-tokens").value = 4096;
-            $("pf-context-window").value = 128000;
-            setThinkingProtocol("none");
-            $("pf-name").focus();
-        }
+    function openCreate() {
+        state.editingId = "";
+        state.keySourceId = "";
+        $("pf-title").textContent = "新增 Provider";
+        $("pf-api-key").value = "";
+        $("pf-api-key").placeholder = "API Key";
+        $("pf-key-hint").textContent = "";
+        $("pf-model").value = "";
+        $("pf-temperature").value = 0.7;
+        $("pf-max-tokens").value = 4096;
+        $("pf-context-window").value = 128000;
+        setThinkingProtocol("none");
+        window.NexoraProviderSettings.selectTemplate("custom", { name: "", base_url: "" });
+        collapseAdvancedProviderFields();
 
         $("provider-form").classList.remove("hidden");
+        $("pf-name").focus();
     }
 
     function openEdit(providerId) {
@@ -254,24 +245,32 @@
         }
 
         state.editingId = providerId;
+        state.keySourceId = providerId;
         $("pf-title").textContent = "编辑 Provider";
-        $("pf-name").value = provider.name || "";
-        $("pf-base-url").value = provider.base_url || "";
-        $("pf-api-key").value = provider.api_key || "";
-        $("pf-api-key").placeholder = "可沿用原 Key，也可覆盖";
-        $("pf-key-hint").textContent = provider.api_key ? "已回显原 Key，留空/不清空则保持不变" : "未配置 Key";
+        $("pf-api-key").value = "";
+        $("pf-api-key").placeholder = provider.has_api_key ? "留空保留已保存的 Key" : "API Key";
+        $("pf-key-hint").textContent = provider.has_api_key
+            ? "API Key 已保存；留空表示保持不变，填写新 Key 可替换。"
+            : "未配置 API Key。";
         $("pf-model").value = provider.model || "";
         $("pf-temperature").value = provider.temperature != null ? provider.temperature : 0.7;
         $("pf-max-tokens").value = provider.max_tokens || 4096;
         $("pf-context-window").value = provider.context_window || 0;
         setThinkingProtocol(provider.thinking_protocol || "none");
+        window.NexoraProviderSettings.selectTemplate(provider.template_id || "custom", {
+            name: provider.name || "",
+            base_url: provider.base_url || ""
+        });
+        collapseAdvancedProviderFields();
         $("provider-form").classList.remove("hidden");
-        $("pf-name").focus();
+        $("pf-model").focus();
     }
 
     function closeForm() {
         $("provider-form").classList.add("hidden");
         state.editingId = "";
+        state.keySourceId = "";
+        window.NexoraProviderSettings.closeModelDialog();
     }
 
     /** 基于指定 Provider 复用接入信息添加新模型（只需改 Model 名）。 */
@@ -285,17 +284,23 @@
         }
 
         state.editingId = "";
+        state.keySourceId = (provider.has_api_key || provider.api_key) ? providerId : "";
         $("pf-title").textContent = "新增模型";
-        $("pf-name").value = provider.name || "";
-        $("pf-base-url").value = provider.base_url || "";
-        $("pf-api-key").value = provider.api_key || "";
-        $("pf-api-key").placeholder = "可沿用已配置 Key，也可覆盖";
-        $("pf-key-hint").textContent = provider.api_key ? "已预填同服务商 Key，可直接使用" : "";
+        $("pf-api-key").value = "";
+        $("pf-api-key").placeholder = state.keySourceId ? "留空沿用该 Provider 的 Key" : "API Key";
+        $("pf-key-hint").textContent = state.keySourceId
+            ? "将由本机安全复用已保存的 Key。"
+            : "源 Provider 未保存 Key，请填写 API Key。";
         $("pf-model").value = "";
         $("pf-temperature").value = provider.temperature != null ? provider.temperature : 0.7;
         $("pf-max-tokens").value = provider.max_tokens || 4096;
         $("pf-context-window").value = provider.context_window || 128000;
         setThinkingProtocol(provider.thinking_protocol || "none");
+        window.NexoraProviderSettings.selectTemplate(provider.template_id || "custom", {
+            name: provider.name || "",
+            base_url: provider.base_url || ""
+        });
+        collapseAdvancedProviderFields();
         $("provider-form").classList.remove("hidden");
         $("pf-model").focus();
     }
@@ -314,6 +319,8 @@
             base_url: $("pf-base-url").value.trim(),
             api_key: $("pf-api-key").value.trim(),
             model: $("pf-model").value.trim(),
+            template_id: window.NexoraProviderSettings.getSelectedId(),
+            key_source_id: state.keySourceId,
             temperature: parseFloat($("pf-temperature").value) || 0.7,
             max_tokens: parseInt($("pf-max-tokens").value, 10) || 4096,
             context_window: parseInt($("pf-context-window").value, 10) || 0,
@@ -340,6 +347,8 @@
                     name: edited.name,
                     base_url: edited.base_url,
                     model: edited.model,
+                    template_id: edited.template_id,
+                    key_source_id: edited.key_source_id,
                     temperature: edited.temperature,
                     max_tokens: edited.max_tokens,
                     context_window: edited.context_window,
@@ -348,9 +357,11 @@
 
                 if (edited.api_key) {
                     state.providers[index].api_key = edited.api_key;
+                    state.providers[index].has_api_key = true;
                 }
             }
         } else {
+            edited.has_api_key = Boolean(edited.api_key || edited.key_source_id);
             state.providers.push(edited);
 
             if (!state.defaultId) {
@@ -375,15 +386,22 @@
             item.className = "provider-item" + (provider.id === state.defaultId ? " default" : "");
             item.innerHTML =
                 '<div class="pi-main">' +
-                '  <div class="pi-name">' + esc(provider.name || provider.id) + (provider.id === state.defaultId ? ' <span class="pi-default">默认</span>' : "") + "</div>" +
-                '  <div class="pi-model">' + esc(provider.model || "") + "</div>" +
-                '  <div class="pi-url">' + esc(provider.base_url || "") + "</div>" +
+                '  <div class="pi-heading">' +
+                '    <span class="pi-name">' + esc(provider.name || provider.id) + "</span>" +
+                (provider.id === state.defaultId ? ' <span class="pi-default">默认</span>' : "") +
+                "  </div>" +
+                '  <div class="pi-details">' +
+                '    <span class="pi-model">' + esc(provider.model || "") + "</span>" +
+                '    <span class="pi-url">' + esc(provider.base_url || "") + "</span>" +
+                "  </div>" +
                 "</div>" +
                 '<div class="pi-actions">' +
-                (provider.id !== state.defaultId ? '<button type="button" class="pi-btn" data-act="default" data-id="' + esc(provider.id) + '">设为默认</button>' : "") +
-                '<button type="button" class="pi-btn" data-act="add-model" data-id="' + esc(provider.id) + '" title="基于此服务商添加新模型">添加模型</button>' +
-                '<button type="button" class="pi-btn" data-act="edit" data-id="' + esc(provider.id) + '">编辑</button>' +
-                '<button type="button" class="pi-btn danger" data-act="remove" data-id="' + esc(provider.id) + '">删除</button>' +
+                (provider.id !== state.defaultId
+                    ? '<button type="button" class="pi-btn" data-act="default" data-id="' + esc(provider.id) + '" aria-label="设为默认" title="设为默认"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m8 1.75 1.95 3.96 4.37.64-3.16 3.08.75 4.35L8 11.73l-3.91 2.05.75-4.35-3.16-3.08 4.37-.64L8 1.75Z"/></svg></button>'
+                    : "") +
+                '<button type="button" class="pi-btn" data-act="add-model" data-id="' + esc(provider.id) + '" aria-label="添加模型" title="添加模型"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.25v9.5M3.25 8h9.5"/></svg></button>' +
+                '<button type="button" class="pi-btn" data-act="edit" data-id="' + esc(provider.id) + '" aria-label="编辑" title="编辑"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 11.2-.5 2.3 2.3-.5 7.5-7.5a1.27 1.27 0 0 0-1.8-1.8L3 11.2Z"/><path d="m9.5 4.5 2 2"/></svg></button>' +
+                '<button type="button" class="pi-btn danger" data-act="remove" data-id="' + esc(provider.id) + '" aria-label="删除" title="删除"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 4.5h9M6 4.5V3h4v1.5m1.5 0-.6 8.5h-5.8l-.6-8.5M6.5 7v4m3-4v4"/></svg></button>' +
 
             "</div>";
 
@@ -547,6 +565,15 @@
         }
     }
 
+    function forgetProviderApiKeys() {
+        state.providers.forEach(function (provider) {
+            if (provider.api_key) {
+                provider.has_api_key = true;
+                delete provider.api_key;
+            }
+        });
+    }
+
     async function persist() {
         var res = await api("/api/local/settings", "POST", persistPayload());
 
@@ -589,6 +616,15 @@
     async function save() {
         var btn = $("btn-save");
 
+        if (
+            !$("provider-form").classList.contains("hidden")
+            && window.NexoraProviderSettings.getSelectedId() !== "custom"
+            && !window.NexoraProviderSettings.areTemplatesLoaded()
+        ) {
+            setStatus("Provider 模板仍在加载，完成后再保存模型设置", false);
+            return;
+        }
+
         if (!window.NexoraToolPermissions.isReady()) {
             setStatus("工具权限设置仍在加载，请稍后保存", false);
             return;
@@ -617,6 +653,8 @@
         var ok = await persist();
 
         if (ok) {
+            forgetProviderApiKeys();
+
             try {
                 await window.NexoraToolPermissions.refreshModels();
                 await window.NexoraToolPermissions.save();
@@ -638,6 +676,17 @@
     function init() {
         bindTitlebar();
         bindNav();
+        window.NexoraProviderSettings.init({
+            getContext: function () {
+                return {
+                    providerId: state.editingId,
+                    keySourceId: state.keySourceId
+                };
+            },
+            setModel: function (model) {
+                $("pf-model").value = String(model || "");
+            }
+        });
 
         $("btn-save").addEventListener("click", save);
         $("btn-add-provider").addEventListener("click", openCreate);

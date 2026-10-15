@@ -91,6 +91,16 @@ def local_permissions_settings_js():
     return send_file(get_bundle_root() / "ui" / "permissions-settings.js", mimetype="application/javascript")
 
 
+@_local_bp.route("/provider-settings.css", methods=["GET"])
+def local_provider_settings_css():
+    return send_file(get_bundle_root() / "ui" / "provider-settings.css", mimetype="text/css")
+
+
+@_local_bp.route("/provider-settings.js", methods=["GET"])
+def local_provider_settings_js():
+    return send_file(get_bundle_root() / "ui" / "provider-settings.js", mimetype="application/javascript")
+
+
 @_local_bp.route("/github-project-settings.css", methods=["GET"])
 @_local_bp.route("/github-project-settings.js", methods=["GET"])
 def local_github_project_asset():
@@ -1954,6 +1964,9 @@ def register_local_routes(app, executor=None) -> None:
         set_default_executor(executor)
 
     app.register_blueprint(_local_bp)
+    from .ProviderSettingsRoutes import register_provider_settings_routes
+
+    register_provider_settings_routes(app)
     plugin_manager = getattr(executor, "plugin_manager", None) if executor is not None else None
     if plugin_manager is not None:
         plugin_manager.register_routes(app)

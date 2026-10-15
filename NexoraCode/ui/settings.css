@@ -378,7 +378,7 @@ textarea {
     scroll-margin-top: var(--settings-scroll-margin);
 }
 
-.view + .view {
+.view ~ .view {
     margin-top: 28px;
     padding-top: 28px;
     border-top: 1px solid var(--border-light);

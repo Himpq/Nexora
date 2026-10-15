@@ -1,0 +1,311 @@
+.pf-template-picker {
+    position: relative;
+}
+
+.pf-template-trigger {
+    display: flex;
+    width: 100%;
+    min-height: 42px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border: 1px solid var(--border-input);
+    border-radius: var(--radius);
+    padding: 9px 12px;
+    background: var(--bg-input);
+    color: var(--text-main);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.pf-template-trigger:hover,
+.pf-template-trigger[aria-expanded="true"] {
+    border-color: var(--border-input-strong);
+    background: var(--bg-input-hover);
+}
+
+.pf-template-trigger:focus-visible,
+.pf-model-row button:focus-visible,
+.pf-model-option:focus-visible,
+.pf-dialog-close:focus-visible {
+    outline: 2px solid var(--accent-ring-strong);
+    outline-offset: 2px;
+}
+
+.pf-template-trigger svg {
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+}
+
+.pf-template-menu {
+    position: absolute;
+    z-index: 30;
+    top: calc(100% + 6px);
+    right: 0;
+    left: 0;
+    max-height: 320px;
+    overflow-y: auto;
+    border: 1px solid var(--border-input-strong);
+    border-radius: var(--radius);
+    padding: 5px;
+    background: var(--bg-surface);
+    box-shadow: var(--shadow-popover-strong);
+}
+
+.pf-template-option {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    border: 0;
+    border-radius: 6px;
+    padding: 7px 10px;
+    background: transparent;
+    color: var(--text-main);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.pf-template-option:hover,
+.pf-template-option[aria-selected="true"] {
+    background: var(--bg-option-active);
+}
+
+.pf-model-row {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+}
+
+.pf-model-row input {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.pf-model-row button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+.pf-advanced {
+    border-top: 1px solid var(--border-light);
+    padding-top: 12px;
+}
+
+.pf-advanced > summary {
+    width: fit-content;
+    color: var(--text-secondary);
+    font-size: var(--settings-font-body);
+    cursor: pointer;
+    user-select: none;
+}
+
+.pf-advanced > summary:hover {
+    color: var(--text-main);
+}
+
+.pf-advanced-fields {
+    display: grid;
+    gap: 16px;
+    padding-top: 16px;
+}
+
+.pf-model-dialog {
+    position: fixed;
+    z-index: 1100;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 16px;
+    background: rgba(8, 10, 14, 0.46);
+}
+
+.pf-model-dialog.hidden {
+    display: none;
+}
+
+.pf-model-dialog-panel {
+    display: flex;
+    width: min(620px, 100%);
+    max-height: min(78vh, 600px);
+    flex-direction: column;
+    gap: 10px;
+    border: 1px solid var(--border-input);
+    border-radius: 12px;
+    padding: 14px;
+    background: var(--bg-surface);
+    color: var(--text-main);
+    box-shadow: var(--shadow-popover-strong);
+    overflow: hidden;
+}
+
+.pf-model-dialog-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.pf-model-dialog-header h2 {
+    margin: 0;
+    font-size: var(--settings-font-label);
+    font-weight: var(--settings-weight-semibold);
+}
+
+.pf-model-dialog-header p {
+    margin: 3px 0 0;
+    color: var(--text-secondary);
+    font-size: var(--settings-font-meta);
+}
+
+.pf-dialog-close {
+    display: grid;
+    width: 30px;
+    height: 30px;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 1px solid var(--border-light);
+    border-radius: 7px;
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.pf-dialog-close:hover {
+    background: var(--bg-option-active);
+    color: var(--text-main);
+}
+
+.pf-dialog-close svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-width: 1.7;
+}
+
+.pf-model-search-field {
+    margin: 0;
+    gap: 4px;
+}
+
+.pf-model-search-field > span {
+    font-size: var(--settings-font-meta);
+}
+
+.pf-model-search-field input {
+    min-height: 32px;
+    padding: 6px 9px;
+    font-size: var(--settings-font-meta);
+}
+
+.pf-model-options {
+    min-height: 80px;
+    flex: 1 1 auto;
+    overflow-y: auto;
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    padding: 4px;
+}
+
+.pf-model-option {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    border: 0;
+    border-radius: 6px;
+    padding: 5px 8px;
+    background: transparent;
+    color: var(--text-main);
+    font-size: var(--settings-font-meta);
+    text-align: left;
+    cursor: pointer;
+}
+
+.pf-model-option:hover {
+    background: var(--bg-option-active);
+}
+
+.pf-model-name {
+    overflow: hidden;
+    min-width: 0;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pf-model-id {
+    overflow: hidden;
+    max-width: 55%;
+    flex: 0 1 auto;
+    color: var(--text-secondary);
+    font-family: var(--mono);
+    font-size: var(--settings-font-meta);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pf-model-empty {
+    padding: 14px 10px;
+    color: var(--text-secondary);
+    font-size: var(--settings-font-meta);
+    text-align: center;
+}
+
+.pf-provider-toast {
+    position: fixed;
+    z-index: 1200;
+    bottom: calc(var(--settings-content-bottom) + 14px);
+    left: 50%;
+    max-width: min(520px, calc(100vw - 32px));
+    border: 1px solid var(--border-input);
+    border-radius: 8px;
+    padding: 10px 14px;
+    background: var(--bg-surface);
+    color: var(--text-main);
+    box-shadow: var(--shadow-popover-strong);
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-50%, 8px);
+    transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.pf-provider-toast.is-visible {
+    opacity: 1;
+    transform: translate(-50%, 0);
+}
+
+.pf-provider-toast.is-error {
+    border-color: var(--danger);
+}
+
+.pf-provider-toast.is-success {
+    border-color: var(--ok);
+}
+
+@media (max-width: 560px) {
+    .pf-model-dialog {
+        padding: 8px;
+    }
+
+    .pf-model-dialog-panel {
+        max-height: 88vh;
+        gap: 8px;
+        padding: 12px;
+    }
+
+    .pf-model-row {
+        flex-direction: column;
+    }
+
+    .pf-model-row button {
+        width: 100%;
+    }
+}

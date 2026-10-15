@@ -66,6 +66,7 @@ class ProviderConfig:
         context_window: int = 128000,
         timeout_seconds: float = 120.0,
         thinking_protocol: str = "none",
+        template_id: str = "custom",
     ):
         self.provider_id = str(provider_id or "").strip() or f"p_{uuid.uuid4().hex[:8]}"
         self.base_url = str(base_url or "").strip().rstrip("/")
@@ -77,6 +78,7 @@ class ProviderConfig:
         self.context_window = int(context_window or 0)
         self.timeout_seconds = float(timeout_seconds or 120.0)
         self.thinking_protocol = normalize_thinking_protocol(thinking_protocol)
+        self.template_id = str(template_id or "custom").strip() or "custom"
 
     def is_configured(self) -> bool:
         return bool(self.base_url) and bool(self.model)
@@ -93,6 +95,7 @@ class ProviderConfig:
             "context_window": self.context_window,
             "timeout_seconds": self.timeout_seconds,
             "thinking_protocol": self.thinking_protocol,
+            "template_id": self.template_id,
         }
 
     def to_public_dict(self) -> dict:
@@ -107,6 +110,7 @@ class ProviderConfig:
             "context_window": self.context_window,
             "has_api_key": bool(self.api_key),
             "thinking_protocol": self.thinking_protocol,
+            "template_id": self.template_id,
         }
 
     @classmethod
@@ -123,6 +127,7 @@ class ProviderConfig:
             context_window=payload.get("context_window", 128000),
             timeout_seconds=payload.get("timeout_seconds", 120.0),
             thinking_protocol=payload.get("thinking_protocol", "none"),
+            template_id=payload.get("template_id", "custom"),
         )
 
 
