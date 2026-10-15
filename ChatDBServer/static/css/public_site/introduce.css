@@ -1,0 +1,564 @@
+/*
+ * introduce.css — 公开介绍页(/introduce)
+ *
+ * 设计基准取自产品自身,不套落地页模板:
+ *   封面 = 登录页的黑色品牌区(纯黑底 + 巨大 Nexora. 字标 + 循环省略号)
+ *   正文 = 主站设置列表语感(白底 / 发丝线 / 左标题右说明的横排条目)
+ *   等宽小字 = 产品内的 mono 用法(JetBrains Mono)
+ * 全页只有封面一处重色,正文不使用卡片、渐变与插画。
+ */
+
+.introduce-page {
+
+    --intro-bg: #ffffff;
+    --intro-hover: #f7f7f8;
+    --intro-text: #111111;
+    --intro-muted: #666666;
+    --intro-faint: #999999;
+    --intro-border: #eaeaea;
+    --intro-accent: #5b8def;
+
+    /* 封面深色令牌:对齐主站暗色侧边栏的表面 / 文字 / 边框 */
+    --intro-dark-bg: #000000;
+    --intro-dark-text: #ffffff;
+    --intro-dark-secondary: #d6d6dc;
+    --intro-dark-muted: #9c9ca6;
+    --intro-dark-border: rgba(255, 255, 255, 0.24);
+
+    --intro-font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, "SFMono-Regular", monospace;
+
+    margin: 0;
+    min-width: 320px;
+    color: var(--intro-text);
+    background: var(--intro-bg);
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.75;
+}
+
+.introduce-page *,
+.introduce-page *::before,
+.introduce-page *::after {
+    box-sizing: border-box;
+}
+
+.introduce-page a {
+    color: inherit;
+    text-decoration: none;
+}
+
+.introduce-page a:focus-visible {
+    outline: 2px solid var(--intro-accent);
+    outline-offset: 3px;
+}
+
+.introduce-page .skip-link {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 50;
+    padding: 8px 12px;
+    transform: translateY(-150%);
+    border-radius: 6px;
+    color: #ffffff;
+    background: var(--intro-text);
+}
+
+.introduce-page .skip-link:focus {
+    transform: translateY(0);
+}
+
+/* ===== 页头 ===== */
+
+.introduce-page .site-header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    border-bottom: 1px solid var(--intro-border);
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(8px);
+}
+
+.introduce-page .site-header-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    width: min(1080px, 100%);
+    min-height: 56px;
+    margin: 0 auto;
+    padding: 0 28px;
+}
+
+.introduce-page .brand,
+.introduce-page .footer-brand {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 2px;
+    color: var(--intro-text);
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    line-height: 1;
+}
+
+/* 品牌点:与主站侧边栏 NexoraCode 品牌点同色 */
+.introduce-page .brand-mark {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--intro-accent);
+}
+
+.introduce-page .main-nav,
+.introduce-page .footer-nav {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+}
+
+.introduce-page .main-nav a,
+.introduce-page .footer-nav a {
+    color: var(--intro-muted);
+    font-size: 14px;
+    transition: color 150ms ease;
+}
+
+.introduce-page .main-nav a:hover,
+.introduce-page .footer-nav a:hover {
+    color: var(--intro-text);
+}
+
+.introduce-page .header-login {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 32px;
+    padding: 0 12px;
+    border-radius: 7px;
+    color: var(--intro-text);
+    font-size: 14px;
+    transition: background 150ms ease;
+}
+
+.introduce-page .header-login:hover {
+    background: var(--intro-hover);
+}
+
+/* ===== 封面:登录页黑色品牌区的等比放大 ===== */
+
+.introduce-page .cover {
+    padding: 104px 0 96px;
+    color: var(--intro-dark-text);
+    background: var(--intro-dark-bg);
+}
+
+.introduce-page .cover-inner {
+    width: min(1080px, calc(100% - 56px));
+    margin: 0 auto;
+}
+
+/* 巨大字标 + 循环省略号,复刻登录页 big-logo 的品牌动作 */
+.introduce-page .cover-wordmark {
+    display: inline-flex;
+    align-items: baseline;
+    margin: 0;
+    font-size: clamp(58px, 9vw, 92px);
+    font-weight: 700;
+    letter-spacing: -0.045em;
+    line-height: 1;
+}
+
+.introduce-page .cover-dot {
+    margin-left: 4px;
+    color: #444444;
+}
+
+.introduce-page .cover-dot::after {
+    content: ".";
+    display: inline-block;
+    animation: intro-multi-phase-dots 4.5s infinite;
+}
+
+@keyframes intro-multi-phase-dots {
+    0%   { content: "."; opacity: 1; }
+    5%   { content: "."; opacity: 0; }
+    10%  { content: "."; opacity: 1; }
+    15%  { content: "."; opacity: 0; }
+    20%  { content: "."; opacity: 1; }
+    33%  { content: ".."; opacity: 1; }
+    44%  { content: "..."; opacity: 1; }
+    55%  { content: "...?"; opacity: 1; }
+    77%  { content: "...?"; opacity: 1; }
+    80%  { content: ".."; opacity: 1; }
+    85%  { content: "."; opacity: 1; }
+    90%  { content: ""; opacity: 1; }
+    100% { content: "."; opacity: 1; }
+}
+
+.introduce-page .cover-tagline {
+    margin: 20px 0 0;
+    color: var(--intro-dark-muted);
+    font-family: var(--intro-font-mono);
+    font-size: 13px;
+    letter-spacing: 0.06em;
+}
+
+.introduce-page .cover-desc {
+    max-width: 600px;
+    margin: 26px 0 0;
+    color: var(--intro-dark-secondary);
+    font-size: 17px;
+    line-height: 1.85;
+}
+
+.introduce-page .cover-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 36px;
+}
+
+/* 封面按钮:主按钮反白,次按钮细描边,不使用彩色与图标 */
+.introduce-page .cover-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 40px;
+    padding: 0 18px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    transition: background 150ms ease, border-color 150ms ease;
+}
+
+.introduce-page .cover-button-primary {
+    color: #000000;
+    background: #ffffff;
+}
+
+.introduce-page .cover-button-primary:hover {
+    background: #e6e6e6;
+}
+
+.introduce-page a.cover-button:not(.cover-button-primary) {
+    border-color: var(--intro-dark-border);
+    color: var(--intro-dark-text);
+}
+
+.introduce-page a.cover-button:not(.cover-button-primary):hover {
+    border-color: rgba(255, 255, 255, 0.5);
+    background: rgba(255, 255, 255, 0.06);
+}
+
+/* ===== 正文文档区 ===== */
+
+.introduce-page .document {
+    width: min(1080px, calc(100% - 56px));
+    margin: 0 auto;
+}
+
+.introduce-page .doc-section {
+    padding: 72px 0 8px;
+    scroll-margin-top: 64px;
+}
+
+/* 区块头:标题左、 mono 类型标签右,底部发丝线,像一份说明书的章节头 */
+.introduce-page .section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 20px;
+    margin-bottom: 24px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--intro-border);
+}
+
+.introduce-page .section-head h2 {
+    margin: 0;
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.3;
+}
+
+.introduce-page .section-tag {
+    color: var(--intro-faint);
+    font-family: var(--intro-font-mono);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+}
+
+.introduce-page .section-lede {
+    max-width: 720px;
+    margin: 0 0 12px;
+    color: var(--intro-muted);
+    font-size: 15px;
+    line-height: 1.9;
+}
+
+/* 功能条目:左标题右说明,发丝线分隔,悬浮浅灰,对齐主站设置列表 */
+.introduce-page .feature-list {
+    margin: 0;
+}
+
+.introduce-page .feature-row {
+    display: grid;
+    grid-template-columns: minmax(180px, 0.8fr) minmax(0, 2fr);
+    gap: 10px 40px;
+    margin: 0 -12px;
+    padding: 22px 12px;
+    border-radius: 8px;
+    transition: background 150ms ease;
+}
+
+.introduce-page .feature-row:hover {
+    background: var(--intro-hover);
+}
+
+.introduce-page .feature-row + .feature-row {
+    border-top: 1px solid var(--intro-border);
+}
+
+.introduce-page .feature-row dt {
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.6;
+}
+
+.introduce-page .feature-row dd {
+    margin: 0;
+    max-width: 640px;
+    color: var(--intro-muted);
+    font-size: 14px;
+    line-height: 1.85;
+}
+
+/* 远程连接的四个步骤:条目内的紧凑有序列表,mono 序号 */
+.introduce-page .step-list {
+    margin: 12px 0 0;
+    padding: 0;
+    list-style: none;
+    counter-reset: intro-step;
+}
+
+.introduce-page .step-list li {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 7px 0;
+    color: var(--intro-text);
+    font-size: 13px;
+    counter-increment: intro-step;
+}
+
+.introduce-page .step-list li + li {
+    border-top: 1px solid var(--intro-border);
+}
+
+.introduce-page .step-list li::before {
+    content: "0" counter(intro-step);
+    color: var(--intro-faint);
+    font-family: var(--intro-font-mono);
+    font-size: 11px;
+}
+
+/* ===== 安装块 ===== */
+
+.introduce-page .install-block {
+    margin-top: 20px;
+    padding: 18px 20px;
+    border: 1px solid var(--intro-border);
+    border-radius: 8px;
+    background: var(--intro-hover);
+    overflow-x: auto;
+}
+
+.introduce-page .install-block code {
+    color: var(--intro-text);
+    font-family: var(--intro-font-mono);
+    font-size: 13px;
+    line-height: 1.9;
+    white-space: pre;
+}
+
+.introduce-page .doc-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 24px;
+}
+
+.introduce-page .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 40px;
+    padding: 0 18px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.introduce-page .button-primary {
+    color: #ffffff;
+    background: var(--intro-text);
+}
+
+.introduce-page .button-primary:hover {
+    background: #303030;
+}
+
+.introduce-page .button-secondary {
+    border-color: var(--intro-border);
+    color: var(--intro-text);
+    background: var(--intro-bg);
+}
+
+.introduce-page .button-secondary:hover {
+    border-color: #d5d5d5;
+    background: var(--intro-hover);
+}
+
+/* ===== 页脚 ===== */
+
+.introduce-page .site-footer {
+    margin-top: 72px;
+    border-top: 1px solid var(--intro-border);
+}
+
+.introduce-page .footer-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    width: min(1080px, calc(100% - 56px));
+    min-height: 72px;
+    margin: 0 auto;
+}
+
+.introduce-page .footer-brand {
+    font-size: 16px;
+}
+
+.introduce-page .footer-nav a {
+    font-size: 13px;
+}
+
+/* ===== 响应式 ===== */
+
+@media (max-width: 860px) {
+
+    .introduce-page .cover {
+        padding: 72px 0 64px;
+    }
+
+    .introduce-page .feature-row {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 6px;
+    }
+
+    .introduce-page .doc-section {
+        padding-top: 56px;
+    }
+
+}
+
+@media (max-width: 620px) {
+
+    .introduce-page .site-header-inner {
+        gap: 12px;
+        padding: 0 18px;
+    }
+
+    .introduce-page .main-nav {
+        gap: 14px;
+    }
+
+    .introduce-page .main-nav a {
+        font-size: 13px;
+    }
+
+    .introduce-page .nav-docs {
+        display: none;
+    }
+
+    .introduce-page .header-login {
+        min-height: 30px;
+        padding: 0 10px;
+        font-size: 13px;
+    }
+
+    .introduce-page .cover-inner,
+    .introduce-page .document,
+    .introduce-page .footer-inner {
+        width: calc(100% - 36px);
+    }
+
+    .introduce-page .cover {
+        padding: 56px 0 52px;
+    }
+
+    .introduce-page .cover-desc {
+        font-size: 15px;
+    }
+
+    .introduce-page .cover-button,
+    .introduce-page .button {
+        min-height: 38px;
+        padding: 0 14px;
+        font-size: 13px;
+    }
+
+    .introduce-page .doc-section {
+        padding-top: 44px;
+    }
+
+    .introduce-page .section-head {
+        margin-bottom: 18px;
+    }
+
+    .introduce-page .section-head h2 {
+        font-size: 21px;
+    }
+
+    .introduce-page .feature-row {
+        padding: 18px 12px;
+    }
+
+    .introduce-page .footer-inner {
+        align-items: flex-start;
+        flex-direction: column;
+        justify-content: center;
+        gap: 14px;
+        padding: 20px 0;
+    }
+
+    .introduce-page .footer-nav {
+        flex-wrap: wrap;
+        gap: 10px 18px;
+    }
+
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+    .introduce-page *,
+    .introduce-page *::before,
+    .introduce-page *::after {
+        transition-duration: 0.01ms !important;
+    }
+
+    /* 省略号停在一个稳定状态,不做循环动画 */
+    .introduce-page .cover-dot::after {
+        content: ".";
+        animation: none;
+    }
+
+}
