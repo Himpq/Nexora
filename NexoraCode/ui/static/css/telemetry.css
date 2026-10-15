@@ -1,0 +1,77 @@
+.nc-telemetry-backdrop {
+    position: fixed;
+    z-index: 2147483000;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgba(11, 15, 22, 0.62);
+}
+
+.nc-telemetry-dialog {
+    width: min(520px, 100%);
+    padding: 24px;
+    border: 1px solid rgba(127, 140, 158, 0.24);
+    border-radius: 14px;
+    background: var(--nc-bg, #ffffff);
+    color: var(--nc-text, #17202b);
+    box-shadow: 0 20px 64px rgba(0, 0, 0, 0.28);
+    font-family: inherit;
+}
+
+.nc-telemetry-dialog h2 {
+    margin: 0 0 14px;
+    font-size: 20px;
+    line-height: 1.35;
+}
+
+.nc-telemetry-dialog p {
+    margin: 0 0 12px;
+    color: var(--nc-text-secondary, #526071);
+    font-size: 14px;
+    line-height: 1.65;
+}
+
+.nc-telemetry-ack {
+    min-height: 38px;
+    margin-top: 8px;
+    padding: 8px 16px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--nc-accent, #2563eb);
+    color: #ffffff;
+    cursor: pointer;
+    font: inherit;
+}
+
+.nc-telemetry-ack:disabled {
+    cursor: progress;
+    opacity: 0.65;
+}
+
+.telemetry-setting-control {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+}
+
+.field .telemetry-setting-control input {
+    width: 16px;
+    min-width: 16px;
+    min-height: 16px;
+    flex: none;
+    margin-top: 4px;
+    padding: 0;
+    border: 0;
+    border-radius: 3px;
+    background: transparent;
+    box-shadow: none;
+    accent-color: var(--accent);
+}
+
+.field .telemetry-setting-control input:hover,
+.field .telemetry-setting-control input:focus {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+}

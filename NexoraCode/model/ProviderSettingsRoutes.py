@@ -100,6 +100,7 @@ def local_settings_get():
             "custom_system_prompt": str(config.get("local_custom_system_prompt", "") or ""),
             "read_agents_md": bool(config.get("local_read_agents_md", True)),
             "tool_auto_expand": bool(config.get("local_tool_auto_expand", True)),
+            "telemetry_enabled": bool(config.get("local_telemetry_enabled", True)),
             "theme": normalize_theme_preference(config.get("local_theme", "system")),
             "auto_retry_count": configured_retry_count(
                 config,
@@ -141,6 +142,12 @@ def local_settings_save():
         and not isinstance(general_payload["tool_auto_expand"], bool)
     ):
         return jsonify({"success": False, "message": "工具调用自动展开设置必须是布尔值"}), 400
+
+    if (
+        "telemetry_enabled" in general_payload
+        and not isinstance(general_payload["telemetry_enabled"], bool)
+    ):
+        return jsonify({"success": False, "message": "统计数据上传设置必须是布尔值"}), 400
 
     if (
         "theme" in general_payload
@@ -247,6 +254,11 @@ def local_settings_save():
 
     if "tool_auto_expand" in general_payload:
         config.set("local_tool_auto_expand", general_payload["tool_auto_expand"])
+
+    if "telemetry_enabled" in general_payload:
+        from .TelemetryService import get_telemetry_service
+
+        get_telemetry_service().set_enabled(general_payload["telemetry_enabled"])
 
     if "theme" in general_payload:
         config.set("local_theme", normalize_theme_preference(general_payload.get("theme")))

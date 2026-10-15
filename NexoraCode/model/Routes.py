@@ -889,6 +889,13 @@ def local_agent_list_conversations():
     return jsonify({"success": True, "conversations": store.list()})
 
 
+def _remember_telemetry_project(conversation: dict) -> None:
+    """Keep only the local project fingerprint active for activity association."""
+    from .TelemetryService import get_telemetry_service
+
+    get_telemetry_service().set_active_project(conversation)
+
+
 @_local_bp.route("/api/conversations", methods=["POST"])
 def local_agent_create_conversation():
     data = request.get_json(silent=True) or {}
@@ -898,6 +905,7 @@ def local_agent_create_conversation():
     store = ConversationStore()
     conversation = store.create(title, metadata)
     conversation_id = str(conversation.get("conversation_id") or "")
+    _remember_telemetry_project(conversation)
 
     # 新会话把当前全局默认复制成自己的独立设置：此后改这个会话不影响其他会话，
     # 改全局也只影响之后新建的会话。
@@ -923,6 +931,7 @@ def local_agent_get_conversation(conv_id: str):
     if conversation is None:
         return jsonify({"success": False, "message": "会话不存在"}), 404
 
+    _remember_telemetry_project(conversation)
     conversation["messages"] = _normalize_history_messages(conversation.get("messages", []))
 
     return jsonify({"success": True, "conversation": conversation})
@@ -1965,8 +1974,10 @@ def register_local_routes(app, executor=None) -> None:
 
     app.register_blueprint(_local_bp)
     from .ProviderSettingsRoutes import register_provider_settings_routes
+    from .TelemetryRoutes import register_telemetry_routes
 
     register_provider_settings_routes(app)
+    register_telemetry_routes(app)
     plugin_manager = getattr(executor, "plugin_manager", None) if executor is not None else None
     if plugin_manager is not None:
         plugin_manager.register_routes(app)

@@ -38,6 +38,13 @@ from .turn_injection import plan_injection
 _LOGGER = logging.getLogger(__name__)
 
 
+def _record_provider_telemetry_error(error_type: str, project_path: str) -> None:
+    """Send a provider error type without its message, response body or stack."""
+    from .TelemetryService import get_telemetry_service
+
+    get_telemetry_service().record_error("provider", error_type, project_path=project_path)
+
+
 # 会话级已询问过的权限路径记忆（path 归一化），避免授权后模型重试同路径时反复弹卡。
 _PERMISSION_ASKED_LOCK = threading.Lock()
 _PERMISSION_ASKED: dict[str, set] = {}
@@ -598,6 +605,7 @@ class AgentLoop:
                     elif event_type == "auto_retry":
                         # Provider 层自动重试（正文开始前的请求错误）。透传给前端，
                         # 否则用户只看到长时间无输出，不知道后端正在重试。
+                        _record_provider_telemetry_error("ProviderError", project_path)
                         retry_record = {
                             "type": "auto_retry",
                             "reason": str(event.get("reason") or ""),
@@ -621,6 +629,7 @@ class AgentLoop:
 
                 # 模型流异常：打印完整错误（含 HTTP 状态与响应体），便于定位 4xx/5xx 配置问题。
                 _LOGGER.exception("[LocalAgent] provider stream error conversation=%s", conversation_id)
+                _record_provider_telemetry_error(type(exc).__name__, project_path)
 
                 # 模型流异常：若已产出部分内容，落盘为最终消息（带 badge_timing），
                 # 避免异常中断后重进对话缺消息/缺 badge。
@@ -723,6 +732,7 @@ class AgentLoop:
                         f"tool_results={tool_results_executed} "
                         f"auto_retry={int(should_retry_empty_response)}"
                     )
+                    _record_provider_telemetry_error("EmptyResponse", project_path)
 
                     if should_retry_empty_response:
                         empty_post_tool_retry_count += 1

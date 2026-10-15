@@ -550,6 +550,7 @@
                 custom_system_prompt: $("g-custom-prompt").value,
                 read_agents_md: $("g-read-agents-md").checked,
                 tool_auto_expand: $("g-tool-auto-expand").checked,
+                telemetry_enabled: $("g-telemetry-enabled").checked,
                 theme: state.theme,
                 auto_retry_count: Number($("g-auto-retry-count").value),
                 empty_response_retry_count: Number($("g-empty-response-retry-count").value)
@@ -602,6 +603,7 @@
         updateCustomPromptCount();
         $("g-read-agents-md").checked = general.read_agents_md !== false;
         $("g-tool-auto-expand").checked = general.tool_auto_expand !== false;
+        $("g-telemetry-enabled").checked = general.telemetry_enabled !== false;
         state.theme = normalizeTheme(general.theme);
         renderThemeOptions();
         applyThemeToDocument(state.theme);

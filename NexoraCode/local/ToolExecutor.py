@@ -39,6 +39,13 @@ def _truncate_for_display(content: str, limit: int) -> str:
     ) + text[:limit]
 
 
+def _report_tool_telemetry_error(error_type: str, context: ToolContext) -> None:
+    """Send only the normalized type of an executed-tool failure."""
+    from model.TelemetryService import get_telemetry_service
+
+    get_telemetry_service().record_error("tool", error_type, project_path=context.project_root)
+
+
 class ToolExecutor:
     def __init__(self, *, max_workers: int = 8):
         self._tools: dict[str, LocalTool] = {}
@@ -223,6 +230,8 @@ class ToolExecutor:
         try:
             result = self._invoke(tool, normalized, tool_context, timeout=timeout)
         except Exception as exc:
+            _report_tool_telemetry_error(type(exc).__name__, tool_context)
+
             return {
                 "success": False,
                 "error": str(exc),
@@ -239,6 +248,8 @@ class ToolExecutor:
             result["success"] = not bool(result.get("error"))
 
         if result.get("success") is False:
+            _report_tool_telemetry_error("ToolReportedFailure", tool_context)
+
             return {
                 "success": False,
                 "error": str(result.get("error") or "工具执行失败"),

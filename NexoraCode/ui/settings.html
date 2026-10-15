@@ -31,6 +31,7 @@
     <link rel="stylesheet" href="/github-project-settings.css?v=20261012_github_project_01"/>
     <link rel="stylesheet" href="/permissions-settings.css?v=20261010_integrated_settings_01"/>
     <link rel="stylesheet" href="/plugins-settings.css"/>
+    <link rel="stylesheet" href="/static/css/telemetry.css"/>
     <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css"/>
 </head>
 <body>
@@ -116,6 +117,14 @@
                         </div>
                         <small class="hint">设置保存在本机配置中，重启 NexoraCode 后仍然生效；保存后主窗口立即切换。</small>
                     </div>
+                    <label class="field telemetry-setting">
+                        <span>使用统计</span>
+                        <span class="telemetry-setting-control">
+                            <input id="g-telemetry-enabled" type="checkbox"/>
+                            <span>发送活跃时长、随机匿名安装 ID（统计回访）与脱敏后的 Provider / 工具错误类型</span>
+                        </span>
+                        <small class="hint">统计请求不含对话内容、文件路径、项目哈希、IP 或 API Key；连接服务器时，网络服务仍可看到来源 IP。</small>
+                    </label>
                 </div>
             </section>
 
