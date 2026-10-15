@@ -124,3 +124,5 @@ NexoraApp_Android/tmp/
 
 # 本地 data-gym 缓存（内容哈希命名，运行期生成，不入库）
 data-gym-cache/
+
+output
