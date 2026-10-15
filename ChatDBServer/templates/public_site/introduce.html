@@ -295,53 +295,43 @@
                         </article>
                     </div>
 
-                    <figure class="wire">
-                        <div class="wire-bar">
-                            <span class="wire-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-                            <span class="wire-title">工作台结构示意</span>
-                            <span class="wire-tag">/new</span>
+                    <figure class="shot-live">
+                        <div class="frame-bar">
+                            <span class="frame-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                            <span class="frame-title">工作台实际界面</span>
+                            <span class="frame-tag">/new</span>
                         </div>
 
-                        <div class="wire-body">
-                            <aside class="wire-side" aria-label="能力入口示意">
-                                <span class="wire-item is-active">会话</span>
-                                <span class="wire-item">知识库</span>
-                                <span class="wire-item">文件</span>
-                                <span class="wire-item">笔记</span>
-                                <span class="wire-item">模型</span>
-                                <span class="wire-item">设置</span>
-                            </aside>
+                        <img class="shot-img"
+                             src="/static/img/introduce/nexora-workbench.png"
+                             width="1280" height="808" loading="lazy" decoding="async"
+                             alt="Nexora 工作台：左侧是会话列表与知识图谱入口，右侧是对话区，输入框上方有 Thinking、Search、Tools（Auto）开关">
 
-                            <div class="wire-main" aria-hidden="true">
-                                <div class="wire-head">
-                                    <span class="wire-pill">Provider / 模型可选</span>
-                                    <span class="wire-head-line"></span>
-                                </div>
-
-                                <div class="wire-msg wire-msg-user"><span></span></div>
-
-                                <div class="wire-msg">
-                                    <span></span>
-                                    <span></span>
-                                    <span class="short"></span>
-                                </div>
-
-                                <div class="wire-tools">
-                                    <span>工具按需注入</span>
-                                    <span>Auto / Force</span>
-                                    <span>知识命中</span>
-                                    <span>记忆</span>
-                                </div>
-
-                                <div class="wire-input">
-                                    <span></span>
-                                    <b>发送</b>
-                                </div>
-                            </div>
-                        </div>
-
-                        <figcaption class="fig-caption">图 2 · 结构示意：左侧是能力入口，右侧是对话、工具注入与知识命中的过程</figcaption>
+                        <figcaption class="fig-caption">图 2 · 工作台：Provider / 模型选择、Thinking / Search / Tools 开关与知识图谱入口同屏</figcaption>
                     </figure>
+
+                    <div class="shot-strip" aria-label="Nexora 界面截图">
+                        <figure class="shot">
+                            <img src="/static/img/introduce/nexora-models.png" width="1200" height="731"
+                                 loading="lazy" decoding="async"
+                                 alt="模型列表页：左侧是供应商列表，右侧是该供应商下的模型名称、Provider 与状态">
+                            <figcaption>图 3 · Provider 与模型管理</figcaption>
+                        </figure>
+
+                        <figure class="shot">
+                            <img src="/static/img/introduce/nexora-observability.png" width="1200" height="749"
+                                 loading="lazy" decoding="async"
+                                 alt="工具观测面板：调用总数、错误率、平均耗时、24 小时失败工具数与趋势图">
+                            <figcaption>图 4 · 工具与用量观测</figcaption>
+                        </figure>
+
+                        <figure class="shot">
+                            <img src="/static/img/introduce/nexora-mail-binding.png" width="1200" height="664"
+                                 loading="lazy" decoding="async"
+                                 alt="设置中的邮箱管理：左侧是邮箱用户，右侧把邮箱用户与 Nexora 用户 ID 绑定">
+                            <figcaption>图 5 · 邮件账号与用户绑定</figcaption>
+                        </figure>
+                    </div>
 
                     <div class="chip-row">
                         <span class="chip">RAG</span>

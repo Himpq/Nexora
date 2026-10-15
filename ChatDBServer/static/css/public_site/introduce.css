@@ -973,16 +973,8 @@ kbd {
     display: none;
 }
 
-/* --- 工作台结构示意（纯 CSS 线框，不是截图） --- */
-.wire {
-    margin: 46px 0 0;
-    border: 1px solid var(--line-2);
-    border-radius: var(--radius-lg);
-    background: var(--paper);
-    overflow: hidden;
-}
-
-.wire-bar {
+/* --- 界面截图框架（真实产品截图，不是重绘） --- */
+.frame-bar {
     display: flex;
     align-items: center;
     gap: 12px;
@@ -991,12 +983,12 @@ kbd {
     background: var(--panel);
 }
 
-.wire-dots {
+.frame-dots {
     display: inline-flex;
     gap: 4px;
 }
 
-.wire-dots i {
+.frame-dots i {
     width: 7px;
     height: 7px;
     border: 1px solid var(--line-2);
@@ -1004,14 +996,14 @@ kbd {
     background: var(--paper);
 }
 
-.wire-title {
+.frame-title {
     color: var(--ink-2);
     font-family: var(--mono);
     font-size: 11px;
     letter-spacing: 0.08em;
 }
 
-.wire-tag {
+.frame-tag {
     margin-left: auto;
     color: var(--muted-2);
     font-family: var(--mono);
@@ -1019,139 +1011,60 @@ kbd {
     letter-spacing: 0.06em;
 }
 
-.wire-body {
-    display: grid;
-    grid-template-columns: 176px minmax(0, 1fr);
-    min-height: 290px;
-}
-
-.wire-side {
-    display: grid;
-    align-content: start;
-    gap: 2px;
-    padding: 16px 12px;
-    border-right: 1px solid var(--line);
+.shot-img {
+    display: block;
+    width: 100%;
+    height: auto;
     background: var(--paper-soft);
 }
 
-.wire-item {
-    padding: 7px 10px;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    color: var(--muted);
-    font-size: 12.5px;
-}
-
-.wire-item.is-active {
-    border-color: var(--line);
-    background: var(--paper);
-    color: var(--ink);
-    font-weight: 650;
-}
-
-.wire-main {
-    display: grid;
-    align-content: start;
-    gap: 12px;
-    padding: 18px;
-}
-
-.wire-head {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding-bottom: 12px;
-    border-bottom: 1px solid var(--line);
-}
-
-.wire-pill {
-    padding: 3px 10px;
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    color: var(--ink-2);
-    font-family: var(--mono);
-    font-size: 10.5px;
-    letter-spacing: 0.04em;
-}
-
-.wire-head-line {
-    flex: 1;
-    height: 1px;
-    background: var(--line);
-}
-
-.wire-msg {
-    display: grid;
-    gap: 7px;
-}
-
-.wire-msg span {
-    height: 8px;
-    border-radius: 4px;
-    background: var(--panel-2);
-}
-
-.wire-msg span.short {
-    width: 52%;
-}
-
-.wire-msg-user {
-    justify-items: end;
-}
-
-.wire-msg-user span {
-    width: 58%;
-    background: rgba(17, 17, 17, 0.16);
-}
-
-.wire-tools {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-}
-
-.wire-tools span {
-    padding: 4px 10px;
-    border: 1px dashed var(--line-2);
-    border-radius: 6px;
-    color: var(--muted);
-    font-family: var(--mono);
-    font-size: 10.5px;
-    letter-spacing: 0.03em;
-}
-
-.wire-input {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-top: 4px;
-    padding: 10px 12px;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: var(--paper-soft);
-}
-
-.wire-input span {
-    flex: 1;
-    height: 8px;
-    border-radius: 4px;
-    background: var(--panel-2);
-}
-
-.wire-input b {
-    padding: 4px 11px;
+.shot-live {
+    margin: 46px 0 0;
     border: 1px solid var(--line-2);
-    border-radius: 6px;
-    color: var(--muted-2);
-    font-size: 12px;
-    font-weight: 650;
+    border-radius: var(--radius-lg);
+    background: var(--paper);
+    overflow: hidden;
 }
 
-.wire .fig-caption {
+.shot-live .fig-caption {
     margin: 0;
     padding: 12px 18px 14px;
     border-top: 1px solid var(--line);
     background: var(--paper-soft);
+}
+
+/* 截图缩略带：三张并排，表格式边框 */
+.shot-strip {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+    margin-top: 26px;
+    border-top: 1px solid var(--line);
+    border-left: 1px solid var(--line);
+}
+
+.shot {
+    margin: 0;
+    padding: 18px 18px 16px;
+    border-right: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+}
+
+.shot img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--paper);
+}
+
+.shot figcaption {
+    margin-top: 12px;
+    color: var(--muted-2);
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.5;
 }
 
 /* --- 双端连接图（NexoraCode 远程链路） --- */
@@ -1711,6 +1624,10 @@ kbd {
         grid-template-columns: minmax(0, 1fr);
     }
 
+    .shot-strip {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .footer-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 28px;
@@ -1762,19 +1679,8 @@ kbd {
         grid-template-columns: minmax(0, 1fr);
     }
 
-    .wire-body {
+    .shot-strip {
         grid-template-columns: minmax(0, 1fr);
-        min-height: 0;
-    }
-
-    .wire-side {
-        grid-auto-flow: column;
-        grid-auto-columns: max-content;
-        gap: 4px;
-        padding: 12px;
-        border-right: none;
-        border-bottom: 1px solid var(--line);
-        overflow-x: auto;
     }
 
     .brand {

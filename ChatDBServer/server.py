@@ -4137,17 +4137,23 @@ def js_bundle(bundle_name):
 
 @app.route('/')
 def index():
-    """首页：未登录展示 Landing，已登录进入新版聊天前端(/new)；旧版完整界面保留在 /old"""
+    """首页：未登录展示项目介绍页，已登录进入新版聊天前端(/new)；旧版完整界面保留在 /old"""
     if 'username' in session:
         return redirect(url_for('new_frontend_page', **request.args))
 
-    return render_template('public_site/landing.html')
+    return render_template('public_site/introduce.html')
 
 
 @app.route('/introduce')
 def introduce_page():
     """公开介绍页：Nexora / NexoraCode / NexoraLearning 三项目总览"""
     return render_template('public_site/introduce.html')
+
+
+@app.route('/landing')
+def landing_page():
+    """旧版宣传页入口，保留用于对照与回退（首页已切换为新介绍页）"""
+    return render_template('public_site/landing.html')
 
 
 @app.route('/nl_introduce')
