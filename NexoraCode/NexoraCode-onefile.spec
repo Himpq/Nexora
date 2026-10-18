@@ -13,8 +13,15 @@ from PyInstaller.utils.hooks import collect_all
 #   不再跨项目引用 ..\ChatDBServer，打包环境无该目录会导致构建失败。
 datas = [('asset_manifest.json', '.'), ('ui', 'ui')]
 binaries = []
-hiddenimports = ['webview.platforms.winforms', 'webview.platforms.edgechromium', 'local.tools.ShellTool', 'local.tools.FileTool', 'local.tools.BrowserCore', 'local.tools.BrowserTool', 'local.tools.ImageSearchTool', 'tools.imgspd', 'tools.imgspd.bing', 'tools.imgspd.bing_common', 'tools.imgspd.crawlee_bing', 'tools.imgspd.mediawiki', 'tools.imgspd.models', 'tools.imgspd.anti_spider']
+hiddenimports = ['webview.platforms.winforms', 'webview.platforms.edgechromium', 'local.tools.ShellTool', 'local.tools.FileTool', 'local.tools.BrowserCore', 'local.tools.BrowserTool', 'local.tools.ImageSearchTool', 'tools.imgspd', 'tools.imgspd.bing', 'tools.imgspd.bing_common', 'tools.imgspd.crawlee_bing', 'tools.imgspd.mediawiki', 'tools.imgspd.models', 'tools.imgspd.anti_spider', 'tiktoken', 'tiktoken_ext', 'tiktoken_ext.openai_public']
 tmp_ret = collect_all('webview')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
+# tiktoken 由 model/TokenEstimator.py 惰性导入（函数体内 import），
+# PyInstaller 静态分析看不到这条依赖；漏打后 exe 一走到 token 估算就抛
+# "NexoraCode token estimation requires tiktoken"，整轮请求失败。
+# collect_all 会一并收集 tiktoken_ext 命名空间包与 BPE 词表数据文件。
+tmp_ret = collect_all('tiktoken')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
