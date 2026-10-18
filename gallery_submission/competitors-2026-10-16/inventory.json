@@ -1,0 +1,682 @@
+{
+    "checkedDate": "2026-10-16",
+    "school": "上海理工大学",
+    "pagesScanned": 8,
+    "allPagesComplete": true,
+    "totalWorks": 96,
+    "competitorWorks": 95,
+    "items": [
+        {
+            "page": 1,
+            "workId": "00611c791ec00000",
+            "title": "校园互助平台",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00611c791ec00000",
+            "isOurs": false
+        },
+        {
+            "page": 1,
+            "workId": "005d803743400000",
+            "title": "大学生知识管理与反思平台",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005d803743400000",
+            "isOurs": false
+        },
+        {
+            "page": 1,
+            "workId": "004f49c457400000",
+            "title": "科研研发智能服务平台",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/004f49c457400000",
+            "isOurs": false
+        },
+        {
+            "page": 1,
+            "workId": "0062648276400000",
+            "title": "ADDW-T2驾驶员分心时刻智能检测系统",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0062648276400000",
+            "isOurs": false
+        },
+        {
+            "page": 1,
+            "workId": "00600da42e000000",
+            "title": "工业微纳产线智能监控系统V3.1",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00600da42e000000",
+            "isOurs": false
+        },
+        {
+            "page": 1,
+            "workId": "005ff902a6400000",
+            "title": "运势小游戏",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005ff902a6400000",
+            "isOurs": false
+        },
+        {
+            "page": 1,
+            "workId": "005ff0640a800000",
+            "title": "工业微纳产线智能监控系统",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005ff0640a800000",
+            "isOurs": false
+        },
+        {
+            "page": 1,
+            "workId": "005eb7d279000000",
+            "title": "晚安同学",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005eb7d279000000",
+            "isOurs": false
+        },
+        {
+            "page": 1,
+            "workId": "004ef4c1af000000",
+            "title": "tank-battle",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/004ef4c1af000000",
+            "isOurs": false
+        },
+        {
+            "page": 1,
+            "workId": "003ea9c463000000",
+            "title": "水墨象棋 · Ancient Chinese Chess",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003ea9c463000000",
+            "isOurs": false
+        },
+        {
+            "page": 1,
+            "workId": "003503d7e2000000",
+            "title": "方言令",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003503d7e2000000",
+            "isOurs": false
+        },
+        {
+            "page": 1,
+            "workId": "006282a5e7c00000",
+            "title": "NexoraApp",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/006282a5e7c00000",
+            "isOurs": true
+        },
+        {
+            "page": 2,
+            "workId": "0061538f14000000",
+            "title": "工业微纳产线智能监控系统V6",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0061538f14000000",
+            "isOurs": false
+        },
+        {
+            "page": 2,
+            "workId": "006104dfae000000",
+            "title": "工业微纳产线智能监控系统V4",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/006104dfae000000",
+            "isOurs": false
+        },
+        {
+            "page": 2,
+            "workId": "0060044528c00000",
+            "title": "工业微纳产线智能监控系统V3",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0060044528c00000",
+            "isOurs": false
+        },
+        {
+            "page": 2,
+            "workId": "005ffc92d1c00000",
+            "title": "工业微纳产线智能监控系统 V2",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005ffc92d1c00000",
+            "isOurs": false
+        },
+        {
+            "page": 2,
+            "workId": "005e524b70000000",
+            "title": "Nova 落地页",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005e524b70000000",
+            "isOurs": false
+        },
+        {
+            "page": 2,
+            "workId": "005d7c26ca800000",
+            "title": "掘金签到管理",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005d7c26ca800000",
+            "isOurs": false
+        },
+        {
+            "page": 2,
+            "workId": "005d2cf3eb400000",
+            "title": "Vergil's Resume",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005d2cf3eb400000",
+            "isOurs": false
+        },
+        {
+            "page": 2,
+            "workId": "005cfd1742000000",
+            "title": "用户注册页面",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005cfd1742000000",
+            "isOurs": false
+        },
+        {
+            "page": 2,
+            "workId": "005c275e93800000",
+            "title": "电子木鱼 · 功德无量",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005c275e93800000",
+            "isOurs": false
+        },
+        {
+            "page": 2,
+            "workId": "005c1b6715c00000",
+            "title": "记账本",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005c1b6715c00000",
+            "isOurs": false
+        },
+        {
+            "page": 2,
+            "workId": "005b1d0bcb000000",
+            "title": "Todo Board 个人任务管理看板",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005b1d0bcb000000",
+            "isOurs": false
+        },
+        {
+            "page": 2,
+            "workId": "005a49a8df000000",
+            "title": "C 语言学习网站（clearn）",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005a49a8df000000",
+            "isOurs": false
+        },
+        {
+            "page": 3,
+            "workId": "005969460a800000",
+            "title": "Flask Web Service",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005969460a800000",
+            "isOurs": false
+        },
+        {
+            "page": 3,
+            "workId": "005920039b800000",
+            "title": "实验迹",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005920039b800000",
+            "isOurs": false
+        },
+        {
+            "page": 3,
+            "workId": "0058deaf2d000000",
+            "title": "贪吃蛇大冒险",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0058deaf2d000000",
+            "isOurs": false
+        },
+        {
+            "page": 3,
+            "workId": "005858e574c00000",
+            "title": "演唱会观看指南",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005858e574c00000",
+            "isOurs": false
+        },
+        {
+            "page": 3,
+            "workId": "005802bbc4800000",
+            "title": "小马过河",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005802bbc4800000",
+            "isOurs": false
+        },
+        {
+            "page": 3,
+            "workId": "00579f08f2c00000",
+            "title": "贪吃蛇 · 水果大冒险",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00579f08f2c00000",
+            "isOurs": false
+        },
+        {
+            "page": 3,
+            "workId": "0056ff8ac4c00000",
+            "title": "登录页面",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0056ff8ac4c00000",
+            "isOurs": false
+        },
+        {
+            "page": 3,
+            "workId": "00567180bc400000",
+            "title": "高中信息技术实训工具集",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00567180bc400000",
+            "isOurs": false
+        },
+        {
+            "page": 3,
+            "workId": "00565788ae800000",
+            "title": "水果贪吃蛇 · Fruit Snake",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00565788ae800000",
+            "isOurs": false
+        },
+        {
+            "page": 3,
+            "workId": "0055266f91000000",
+            "title": "水果贪吃蛇",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0055266f91000000",
+            "isOurs": false
+        },
+        {
+            "page": 3,
+            "workId": "00543a6c67c00000",
+            "title": "Excel转PDF工具-2",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00543a6c67c00000",
+            "isOurs": false
+        },
+        {
+            "page": 3,
+            "workId": "0053d1e035c00000",
+            "title": "Windows 系统优化工具",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0053d1e035c00000",
+            "isOurs": false
+        },
+        {
+            "page": 4,
+            "workId": "0053cf01c0800000",
+            "title": "贪吃蛇AI自动寻路",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0053cf01c0800000",
+            "isOurs": false
+        },
+        {
+            "page": 4,
+            "workId": "0052a2617e000000",
+            "title": "水果贪吃蛇游戏",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0052a2617e000000",
+            "isOurs": false
+        },
+        {
+            "page": 4,
+            "workId": "00527fba9d400000",
+            "title": "图片格式转换工具",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00527fba9d400000",
+            "isOurs": false
+        },
+        {
+            "page": 4,
+            "workId": "00513cccba000000",
+            "title": "贪吃蛇水果大冒险-2",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00513cccba000000",
+            "isOurs": false
+        },
+        {
+            "page": 4,
+            "workId": "005127927c000000",
+            "title": "霓虹时钟",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/005127927c000000",
+            "isOurs": false
+        },
+        {
+            "page": 4,
+            "workId": "00510afc67400000",
+            "title": "Excel 转 PDF 工具",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00510afc67400000",
+            "isOurs": false
+        },
+        {
+            "page": 4,
+            "workId": "00504a5e04400000",
+            "title": "网址导航页",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00504a5e04400000",
+            "isOurs": false
+        },
+        {
+            "page": 4,
+            "workId": "004ff29243800000",
+            "title": "贪吃蛇大作战-2",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/004ff29243800000",
+            "isOurs": false
+        },
+        {
+            "page": 4,
+            "workId": "004f228b0ac00000",
+            "title": "tank-battle-v5",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/004f228b0ac00000",
+            "isOurs": false
+        },
+        {
+            "page": 4,
+            "workId": "004f1c43dec00000",
+            "title": "tank-battle-v4",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/004f1c43dec00000",
+            "isOurs": false
+        },
+        {
+            "page": 4,
+            "workId": "004f103ffec00000",
+            "title": "tank-battle-v3",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/004f103ffec00000",
+            "isOurs": false
+        },
+        {
+            "page": 4,
+            "workId": "004efc0e4c800000",
+            "title": "tank-battle-v2",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/004efc0e4c800000",
+            "isOurs": false
+        },
+        {
+            "page": 5,
+            "workId": "004ed5a69e400000",
+            "title": "OTP验证码展示器",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/004ed5a69e400000",
+            "isOurs": false
+        },
+        {
+            "page": 5,
+            "workId": "004e93a081c00000",
+            "title": "贪吃蛇大作战",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/004e93a081c00000",
+            "isOurs": false
+        },
+        {
+            "page": 5,
+            "workId": "004d7e3d7bc00000",
+            "title": "极简计算器",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/004d7e3d7bc00000",
+            "isOurs": false
+        },
+        {
+            "page": 5,
+            "workId": "004d7ced67000000",
+            "title": "六安旅游推荐网站",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/004d7ced67000000",
+            "isOurs": false
+        },
+        {
+            "page": 5,
+            "workId": "004d6f1d27800000",
+            "title": "水果贪吃蛇 - 吃遍水果大冒险",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/004d6f1d27800000",
+            "isOurs": false
+        },
+        {
+            "page": 5,
+            "workId": "004d5470cbc00000",
+            "title": "rrr 计算器",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/004d5470cbc00000",
+            "isOurs": false
+        },
+        {
+            "page": 5,
+            "workId": "004c221145400000",
+            "title": "贪吃蛇-水果大作战",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/004c221145400000",
+            "isOurs": false
+        },
+        {
+            "page": 5,
+            "workId": "004b06a703800000",
+            "title": "贪吃蛇 · 水果大餐",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/004b06a703800000",
+            "isOurs": false
+        },
+        {
+            "page": 5,
+            "workId": "004ad7244fc00000",
+            "title": "用户注册页",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/004ad7244fc00000",
+            "isOurs": false
+        },
+        {
+            "page": 5,
+            "workId": "00484039cb000000",
+            "title": "贪吃蛇水果大冒险",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00484039cb000000",
+            "isOurs": false
+        },
+        {
+            "page": 5,
+            "workId": "0047d16636000000",
+            "title": "🌸 次元签到屋",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0047d16636000000",
+            "isOurs": false
+        },
+        {
+            "page": 5,
+            "workId": "00463883f2800000",
+            "title": "高中计算机全能学习工具箱",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00463883f2800000",
+            "isOurs": false
+        },
+        {
+            "page": 6,
+            "workId": "0044ed84cd400000",
+            "title": "时钟小工具",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0044ed84cd400000",
+            "isOurs": false
+        },
+        {
+            "page": 6,
+            "workId": "0041ec660ec00000",
+            "title": "喝水打卡 · Water Check-in",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0041ec660ec00000",
+            "isOurs": false
+        },
+        {
+            "page": 6,
+            "workId": "0041d7f78dc00000",
+            "title": "计算器",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0041d7f78dc00000",
+            "isOurs": false
+        },
+        {
+            "page": 6,
+            "workId": "004166cc30400000",
+            "title": "MySQL Admin Tool",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/004166cc30400000",
+            "isOurs": false
+        },
+        {
+            "page": 6,
+            "workId": "003fd29999800000",
+            "title": "跑步记录",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003fd29999800000",
+            "isOurs": false
+        },
+        {
+            "page": 6,
+            "workId": "003fba96f1800000",
+            "title": "高校实验室预约系统",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003fba96f1800000",
+            "isOurs": false
+        },
+        {
+            "page": 6,
+            "workId": "003efdc26b000000",
+            "title": "数独游戏 · Sudoku",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003efdc26b000000",
+            "isOurs": false
+        },
+        {
+            "page": 6,
+            "workId": "003eab6ed4c00000",
+            "title": "3D推箱子 Sokoban",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003eab6ed4c00000",
+            "isOurs": false
+        },
+        {
+            "page": 6,
+            "workId": "003e8fe515400000",
+            "title": "喝水记录小工具",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003e8fe515400000",
+            "isOurs": false
+        },
+        {
+            "page": 6,
+            "workId": "003cdf82f7000000",
+            "title": "AI狼人杀",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003cdf82f7000000",
+            "isOurs": false
+        },
+        {
+            "page": 6,
+            "workId": "003b5b2d51000000",
+            "title": "每日签到工具",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003b5b2d51000000",
+            "isOurs": false
+        },
+        {
+            "page": 6,
+            "workId": "003a78ba6d800000",
+            "title": "签到邮件提醒小工具",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003a78ba6d800000",
+            "isOurs": false
+        },
+        {
+            "page": 7,
+            "workId": "003a11d495c00000",
+            "title": "天气小工具",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003a11d495c00000",
+            "isOurs": false
+        },
+        {
+            "page": 7,
+            "workId": "0037808a2cc00000",
+            "title": "高中计算机综合工具箱",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0037808a2cc00000",
+            "isOurs": false
+        },
+        {
+            "page": 7,
+            "workId": "00360d5b14800000",
+            "title": "2048",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00360d5b14800000",
+            "isOurs": false
+        },
+        {
+            "page": 7,
+            "workId": "003279c368c00000",
+            "title": "考勤签到小工具",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003279c368c00000",
+            "isOurs": false
+        },
+        {
+            "page": 7,
+            "workId": "003243e2cc000000",
+            "title": "天津小吃推荐",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003243e2cc000000",
+            "isOurs": false
+        },
+        {
+            "page": 7,
+            "workId": "0031d7cfed400000",
+            "title": "Todo List 应用",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0031d7cfed400000",
+            "isOurs": false
+        },
+        {
+            "page": 7,
+            "workId": "003162bc5ec00000",
+            "title": "1+16=17 — 我的第一个华为云作品",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003162bc5ec00000",
+            "isOurs": false
+        },
+        {
+            "page": 7,
+            "workId": "00314a0e62800000",
+            "title": "日期差计算器",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00314a0e62800000",
+            "isOurs": false
+        },
+        {
+            "page": 7,
+            "workId": "0031498314000000",
+            "title": "年龄计算器·时光之旅",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0031498314000000",
+            "isOurs": false
+        },
+        {
+            "page": 7,
+            "workId": "00313cdedec00000",
+            "title": "每日签到小工具",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00313cdedec00000",
+            "isOurs": false
+        },
+        {
+            "page": 7,
+            "workId": "0031162478000000",
+            "title": "2048游戏",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0031162478000000",
+            "isOurs": false
+        },
+        {
+            "page": 7,
+            "workId": "003114aab6c00000",
+            "title": "2048游戏",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003114aab6c00000",
+            "isOurs": false
+        },
+        {
+            "page": 8,
+            "workId": "003110e569000000",
+            "title": "2048经典小游戏",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003110e569000000",
+            "isOurs": false
+        },
+        {
+            "page": 8,
+            "workId": "003109aa6dc00000",
+            "title": "贵州旅游指南",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003109aa6dc00000",
+            "isOurs": false
+        },
+        {
+            "page": 8,
+            "workId": "003107bac7c00000",
+            "title": "倒计时器工具 0908",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/003107bac7c00000",
+            "isOurs": false
+        },
+        {
+            "page": 8,
+            "workId": "0030fe7336800000",
+            "title": "上海旅游指南",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0030fe7336800000",
+            "isOurs": false
+        },
+        {
+            "page": 8,
+            "workId": "0030fd0cf5000000",
+            "title": "滁州旅游指南",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0030fd0cf5000000",
+            "isOurs": false
+        },
+        {
+            "page": 8,
+            "workId": "00306a9910000000",
+            "title": "原神祈愿模拟器",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00306a9910000000",
+            "isOurs": false
+        },
+        {
+            "page": 8,
+            "workId": "00302dddf1800000",
+            "title": "番茄钟专注管理工具 0907",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00302dddf1800000",
+            "isOurs": false
+        },
+        {
+            "page": 8,
+            "workId": "00302c7c92400000",
+            "title": "高耸入云",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00302c7c92400000",
+            "isOurs": false
+        },
+        {
+            "page": 8,
+            "workId": "00300e5a41c00000",
+            "title": "BMI 计算器",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00300e5a41c00000",
+            "isOurs": false
+        },
+        {
+            "page": 8,
+            "workId": "00300ad262800000",
+            "title": "多模式定时器小工具(1)",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00300ad262800000",
+            "isOurs": false
+        },
+        {
+            "page": 8,
+            "workId": "0030099831800000",
+            "title": "多模式定时器小工具",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/0030099831800000",
+            "isOurs": false
+        },
+        {
+            "page": 8,
+            "workId": "00300052c6c00000",
+            "title": "1+15=16 — 我的第一个华为云作品",
+            "galleryUrl": "https://gallery.developer.huaweicloud.com/gallery/00300052c6c00000",
+            "isOurs": false
+        }
+    ]
+}

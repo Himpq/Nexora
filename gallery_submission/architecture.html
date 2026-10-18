@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>NexoraApp 系统架构</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; padding: 48px; background: #f5f4fc; color: #29264c; font-family: "Microsoft YaHei", sans-serif; }
+        h1 { margin: 0 0 12px; font-size: 36px; }
+        .subtitle { margin: 0 0 30px; color: #68627e; font-size: 19px; }
+        .row { display: flex; gap: 22px; }
+        .card { flex: 1; background: white; border: 1px solid #dedbed; border-radius: 14px; padding: 24px; }
+        h2 { margin: 0 0 12px; font-size: 24px; }
+        p { margin: 0; line-height: 1.8; font-size: 18px; }
+        .connector { height: 48px; display: flex; align-items: center; justify-content: center; color: #746d91; font-size: 17px; }
+        .connector::before, .connector::after { content: ""; width: 80px; height: 1px; margin: 0 18px; background: #c4bddb; }
+        .business { background: #ece9f8; border-color: #c9c1e4; }
+        .footnote { margin-top: 24px; font-size: 16px; color: #68627e; }
+    </style>
+</head>
+<body>
+    <h1>NexoraApp 系统架构</h1>
+    <p class="subtitle">ArkTS / ArkUI 双端客户端 · 独立服务端 · 电脑协同</p>
+    <div class="row">
+        <div class="card"><h2>HarmonyOS 客户端</h2><p>原生 ArkUI 界面<br>对话、知识库、随笔、学习</p></div>
+        <div class="card"><h2>Android 客户端</h2><p>ArkUI-X 与平台适配<br>对话、知识库、随笔、学习</p></div>
+    </div>
+    <div class="connector">客户端业务与状态</div>
+    <div class="card business"><h2>业务接口与消息处理</h2><p>账号与会话状态 · HTTP 请求 · 对话增量回复 · 工具结果展示 · 电脑会话消息</p></div>
+    <div class="connector">网络通信</div>
+    <div class="row">
+        <div class="card"><h2>Nexora 服务端</h2><p>账号、对话与知识服务<br>模型调用与工具处理</p></div>
+        <div class="card"><h2>学习服务</h2><p>课程、题库与学习路线<br>练习、复习与学习报告</p></div>
+        <div class="card"><h2>已配对电脑</h2><p>设备、项目与会话<br>承接电脑端任务执行</p></div>
+    </div>
+    <p class="footnote">公开仓库包含客户端源码；应用需连接独立部署的服务，电脑协同需完成配对。</p>
+</body>
+</html>

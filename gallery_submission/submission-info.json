@@ -1,0 +1,31 @@
+{
+    "workName": "NexoraApp",
+    "gitUrl": "https://gitcode.com/Himpq/NexoraApp.git",
+    "gitBranch": "main",
+    "trainingCampId": "afa88561-ea07-4c34-9dba-47948fd6b9bc",
+    "activityName": "码道高校教学合作计划（上海理工大学）",
+    "school": "上海理工大学",
+    "competitionUrl": "https://developer.huaweicloud.com/competition/information/1300000338/introduction",
+    "competitionName": "2026华为开发者大赛-上海理工大学站",
+    "competitionSubmissionUrl": "https://welink.huaweicloud.com/s/VBT4EfKn",
+    "introduction": "面向鸿蒙与 Android 的智能助手，集成 AI 对话、知识管理、随笔记录与学习工作区。",
+    "lastAttemptStatus": 201,
+    "lastAttemptCode": "GALLERY.SUCCESS",
+    "files": {
+        "NexoraApp-cover.png": {
+            "bytes": 1302018,
+            "sha256": "f46a94dda50daaf21fc1ace7598918f45c0fee0fb696df0f682e2c9dbebba096"
+        },
+        "NexoraApp-detail.zip": {
+            "bytes": 68968,
+            "sha256": "d0542c29a34600de1389305134a2d0fe19a360a3e1411a30b919158b4d29c931"
+        }
+    },
+    "workId": "006282a5e7c00000",
+    "workUrl": "https://gallery.developer.huaweicloud.com/gallery/006282a5e7c00000",
+    "publicPageVerified": true,
+    "reward": {
+        "success": true,
+        "value": 200
+    }
+}

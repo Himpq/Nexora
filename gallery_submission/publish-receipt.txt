@@ -1,0 +1,8 @@
+HTTP 201
+workId=006282a5e7c00000
+workUrl=https://gallery.developer.huaweicloud.com/gallery/006282a5e7c00000
+activity=码道高校教学合作计划（上海理工大学）
+gitUrl=https://gitcode.com/Himpq/NexoraApp.git
+gitBranch=main
+reward=success value=200
+publicPageVerified=true
