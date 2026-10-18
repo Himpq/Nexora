@@ -278,7 +278,12 @@
     import type { ContextInjectionStep } from '@/stream/contextInjection'
     import { parseContextInjectionStep, resolveActiveContextInjectionStep } from '@/stream/contextInjection'
     import { hasAnyIo, readMessageIoTokens } from '@/stream/tokenBudget'
-    import { buildProcessSectionSummary, resolveFinalContentIndex, resolveProcessItemIndexes } from '@/stream/processFold'
+    import {
+        buildProcessSectionSummary,
+        resolveProcessFoldBoundaryIndex,
+        resolveProcessItemIndexes,
+        type ProcessFoldItem,
+    } from '@/stream/processFold'
     import { resolveStreamCaretIndex } from '@/stream/streamCaret'
     import {
         MESSAGE_ITEM_RENDER_KEY,
@@ -643,26 +648,17 @@
     })
 
     /**
-     * 过程区折叠:
-     *
-     * 一条 assistant 消息常是「正文A → 工具 → 正文B → 工具 → 最终回复」。
-     * 收尾后,最后一个 content 分段之前的全部渲染项视为「过程」,
-     * 统一收进外层折叠区,只留最终回复平铺,避免中间过程淹没结论。
-     *
-     * 折叠条件(见 @/stream/processFold):
-     *   1. 最后一项必须是正文 —— 最后一项是工具/思考/错误都不折叠
-     *   2. 最后一项不能是错误
-     *   3. 流式中不折叠
-     *   4. 中断时最后一项是半截正文可折叠,是工具则不折叠(由条件 1 覆盖)
-     *
-     * 渲染上过程项与最终回复分成两个循环:过程项在折叠容器内,最终回复在
-     * 容器外。容器收起时 grid-template-rows 归零会让内部内容高度塌陷,
-     * 若最终回复也在容器内会被一并隐藏。
+     * 地图结果出现时，从地图前最近的正文开始展示，保证说明、地图和地图后的回复都不折叠。
      */
+    const isMapResultProcessItem = (item: ProcessFoldItem): boolean => {
+        return item.kind === 'tool' && !!item.mapMarkdown
+    }
+
     const processItemIndexes = computed<Set<number>>(() => {
         return resolveProcessItemIndexes(renderItems.value, {
             isStreaming: !!props.streaming || !!props.message.pending,
             isQuestionAnswered: (item) => isQuestionAnswered(item as QuestionRenderItem),
+            isMapResult: isMapResultProcessItem,
         })
     })
 
@@ -699,38 +695,30 @@
         return buildProcessSectionSummary(renderItems.value, processItemIndexes.value)
     })
 
-    /**
-     * 过程项与最终回复项分开渲染:
-     *
-     * 折叠容器收起时 grid-template-rows 归零,内部所有内容高度塌陷。
-     * 因此最终回复必须渲染在容器之外,否则会被一并隐藏。
-     *
-     * 切分基准与 resolveProcessItemIndexes 一致:最后一个正文分段。
-     * 该分段之后可能还有工具行(该轮以工具调用收尾),它们属于过程,
-     * 必须留在容器内,不能因为「在数组末尾」被当成最终回复。
-     */
-    const finalContentIndex = computed<number>(() => resolveFinalContentIndex(renderItems.value))
+    /** 过程区只收起可见起点之前的渲染项。 */
+    const processBoundaryIndex = computed<number>(() => {
+        return resolveProcessFoldBoundaryIndex(renderItems.value, isMapResultProcessItem)
+    })
 
     const processItems = computed<Array<RenderItem>>(() => {
         const items = renderItems.value
 
-        // finalContentIndex < 0 表示没有正文分段,此时不切分:
-        // slice(0, -1) 在 JS 里是「倒数第一项之前」,会把末项错切出去。
-        if (processItemIndexes.value.size === 0 || finalContentIndex.value < 0) {
+        // 没有正文分段时不切分，避免 slice(0, -1) 把最后一项错切出去。
+        if (processItemIndexes.value.size === 0 || processBoundaryIndex.value < 0) {
             return []
         }
 
-        return items.slice(0, finalContentIndex.value)
+        return items.slice(0, processBoundaryIndex.value)
     })
 
     const finalItems = computed<Array<RenderItem>>(() => {
         const items = renderItems.value
 
-        if (processItemIndexes.value.size === 0 || finalContentIndex.value < 0) {
+        if (processItemIndexes.value.size === 0 || processBoundaryIndex.value < 0) {
             return items
         }
 
-        return items.slice(finalContentIndex.value)
+        return items.slice(processBoundaryIndex.value)
     })
 
     /**

@@ -21,10 +21,12 @@ function item(kind, sourceIndex, text) {
 
 const neverAnswered = () => false
 const alwaysAnswered = () => true
+const isMapResult = (renderItem) => renderItem.kind === 'tool' && !!renderItem.mapMarkdown
 
 const fold = (items, isStreaming = false) => resolveProcessItemIndexes(items, {
     isStreaming,
     isQuestionAnswered: neverAnswered,
+    isMapResult,
 })
 
 // ---------- 规则 1:最后一条非正文不折叠 ----------
@@ -107,6 +109,17 @@ const folded = fold(typical)
 assert.deepEqual([...folded].sort((a, b) => a - b), [0, 1, 2, 3, 4], '过程项应折叠')
 assert.equal(folded.has(5), false, '最终回复(最后一项正文)不能被折叠')
 
+// ---------- 地图结果:地图说明、地图卡片及后续回复都保持可见 ----------
+
+const mapResult = [
+    item('reasoning', 0),
+    item('content', 1, '下面的地图展示了路线。'),
+    { kind: 'tool', sourceIndex: 2, mapMarkdown: '<map />' },
+    item('content', 3, '地图后的补充说明。'),
+]
+
+assert.deepEqual([...fold(mapResult)].sort((a, b) => a - b), [0], '地图前最近正文起的内容都应保持可见')
+
 // ---------- 规则 4:中断场景 ----------
 
 // 中断,最后一项是半截正文 → 可折叠
@@ -152,6 +165,7 @@ assert.equal(pendingFolded.has(0), true, '同一条消息里的工具行仍应�
 const answeredFolded = resolveProcessItemIndexes(withPendingQuestion, {
     isStreaming: false,
     isQuestionAnswered: alwaysAnswered,
+    isMapResult,
 })
 
 assert.equal(answeredFolded.has(1), true, '已作答的权限卡可以折叠')
@@ -159,7 +173,11 @@ assert.equal(answeredFolded.has(1), true, '已作答的权限卡可以折叠')
 // ---------- 边界:空输入 ----------
 
 assert.equal(fold([]).size, 0)
-assert.equal(resolveProcessItemIndexes(null, { isStreaming: false, isQuestionAnswered: neverAnswered }).size, 0)
+assert.equal(resolveProcessItemIndexes(null, {
+    isStreaming: false,
+    isQuestionAnswered: neverAnswered,
+    isMapResult,
+}).size, 0)
 
 // ---------- 摘要文案 ----------
 

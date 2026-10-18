@@ -27,6 +27,7 @@ export interface ProcessFoldItem {
     kind: string
     sourceIndex: number
     segment?: { text?: string; type?: string }
+    mapMarkdown?: string
 }
 
 export interface ProcessFoldOptions {
@@ -34,6 +35,8 @@ export interface ProcessFoldOptions {
     isStreaming: boolean
     /** 该 question 项是否已作答(未作答的永不折叠) */
     isQuestionAnswered: (item: ProcessFoldItem) => boolean
+    /** 是否为成功生成地图卡片的工具项 */
+    isMapResult: (item: ProcessFoldItem) => boolean
 }
 
 /** 最后一个正文渲染项在 items 中的下标;没有正文分段时返回 -1 */
@@ -49,6 +52,35 @@ export function resolveFinalContentIndex(items: Array<ProcessFoldItem>): number 
     }
 
     return -1
+}
+
+/**
+ * 计算未折叠区域的起点。地图结果出现时，从地图前最近的正文开始展示，后续内容也保持可见。
+ */
+export function resolveProcessFoldBoundaryIndex(
+    items: Array<ProcessFoldItem>,
+    isMapResult: (item: ProcessFoldItem) => boolean
+): number {
+    const finalContentIndex = resolveFinalContentIndex(items)
+
+    if (finalContentIndex < 0) {
+        return -1
+    }
+
+    const mapIndex = items.findIndex((item) => item.kind === 'tool' && isMapResult(item))
+
+    if (mapIndex < 0) {
+        return finalContentIndex
+    }
+
+    for (let index = mapIndex - 1; index >= 0; index -= 1) {
+
+        if (items[index].kind === 'content') {
+            return Math.min(index, finalContentIndex)
+        }
+    }
+
+    return Math.min(mapIndex, finalContentIndex)
 }
 
 /**
@@ -84,12 +116,14 @@ export function resolveProcessItemIndexes(
         return indexes
     }
 
-    // 规则 4:正文就是第一项时没有过程可折
-    if (finalIndex <= 0) {
+    // 未折叠起点在首项时，没有过程项需要折叠。
+    const foldBoundaryIndex = resolveProcessFoldBoundaryIndex(items, options.isMapResult)
+
+    if (foldBoundaryIndex <= 0) {
         return indexes
     }
 
-    items.slice(0, finalIndex).forEach((item) => {
+    items.slice(0, foldBoundaryIndex).forEach((item) => {
         // 未作答的 question 卡片不折叠:折进去用户看不到授权入口
         if (item.kind === 'question' && !options.isQuestionAnswered(item)) {
             return
