@@ -107,6 +107,8 @@ HarmonyosApp/screenshots/
 _*.json
 _*.txt
 temp_jar_extract
+# 仓库根目录的临时调试脚本 / HAR 转储 / 部署探针日志（一次性的，不入库）
+/temp/
 # HarmonyOS hvigor build cache and app build logs (never version these)
 .hvigor/
 NexoraApp/build_log.txt
