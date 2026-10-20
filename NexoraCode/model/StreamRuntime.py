@@ -67,6 +67,21 @@ def _broadcast_task_event(payload: Dict[str, Any]) -> None:
         except Exception:
             _LOGGER.exception("[LocalTaskEvent] listener_failed")
 
+
+def broadcast_conversation_changed(action: str, conversation_id: str, title: str = "") -> None:
+    """广播会话列表变更（创建/删除/改标题）。
+
+    会话列表本身没有推送通道，本地前端要等用户手动刷新才看到新会话。
+    复用任务事件流（/api/local/tasks/watch）：前端收到后重拉 /api/conversations，
+    列表渲染自带签名去重，内容没变时不会重建 DOM。
+    """
+    _broadcast_task_event({
+        "type": "conversation_changed",
+        "action": str(action or "").strip(),
+        "conversation_id": str(conversation_id or "").strip(),
+        "title": str(title or "").strip(),
+    })
+
 _MAX_CHUNKS_PER_SESSION = 12000
 # 攒批落盘阈值：攒够这么多事件或任务收尾时写一次文件。
 _JOURNAL_FLUSH_CHUNKS = 64

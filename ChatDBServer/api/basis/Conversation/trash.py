@@ -40,6 +40,7 @@ from .errors import (
     ConversationNotFoundError,
     ConversationValidationError,
 )
+from .events import publish_conversation_changed
 from .repository import (
     conversation_base_path,
     conversation_file_path,
@@ -601,7 +602,11 @@ class ConversationTrashService:
                 os.remove(conv_path)
             asset_store_mod.remove_conversation_assets_dir(username, conversation_id)
             index_mod.remove_from_index(username, conversation_id)
-            return trash_id
+
+        # 删除后广播：其它窗口与浏览器不必等手动刷新就把会话移出列表。
+        publish_conversation_changed(username, "deleted", conversation_id)
+
+        return trash_id
 
     # ---------- list ----------
 

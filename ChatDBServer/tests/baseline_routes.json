@@ -1267,6 +1267,12 @@
       ]
     ],
     [
+      "/api/notifications/conversations/<conversation_id>/read",
+      [
+        "POST"
+      ]
+    ],
+    [
       "/api/papi/chat/completions",
       [
         "POST"

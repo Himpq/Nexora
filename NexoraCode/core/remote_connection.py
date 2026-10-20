@@ -114,6 +114,26 @@ def _relay_task_events(ws, send_lock, subscription_id, stream_id, after_seq, sto
         })
 
 
+def _task_lifecycle_frame(payload):
+    """把本地任务生命周期事件转成设备 WS 帧。
+
+    云端据此广播给浏览器，替代「每 5 秒拉一次 /api/local/tasks」的轮询：
+    任务开始/结束时主动推，浏览器只在收到事件后才去同步活动任务。
+    """
+    event_type = str(payload.get("type") or "")
+
+    if event_type not in {"task_started", "task_finished"}:
+        return None
+
+    return {
+        "type": "task_lifecycle",
+        "event": event_type,
+        "stream_id": str(payload.get("stream_id") or ""),
+        "conversation_id": str(payload.get("conversation_id") or ""),
+        "status": str(payload.get("status") or ""),
+    }
+
+
 def normalize_server_url(value):
     parsed = urlsplit(str(value).strip())
 
@@ -319,6 +339,8 @@ class RemoteConnection:
             task_relays = {}
             task_relays_lock = threading.Lock()
             phase = "load_settings"
+            on_task_event = None
+            unsubscribe_task_events = None
 
             try:
                 settings = self.settings()
@@ -330,6 +352,26 @@ class RemoteConnection:
                 ws = websocket.create_connection(ws_url, timeout=10)
                 self.ws = ws
                 send_lock = threading.Lock()
+                task_events = []
+                task_events_lock = threading.Lock()
+
+                def on_task_event(payload):
+                    """本地任务生命周期事件：转成设备帧，由主循环发往云端。
+
+                    回调可能来自 worker 线程，不能直接 ws.send（websocket-client
+                    非线程安全），因此只入队，主循环统一发送。
+                    """
+                    frame = _task_lifecycle_frame(payload)
+
+                    if not frame:
+                        return
+
+                    with task_events_lock:
+                        # 只保留最近的状态：断线期间堆积的历史事件没有意义。
+                        task_events.append(frame)
+
+                        if len(task_events) > 64:
+                            del task_events[:-64]
 
                 phase = "send_auth"
                 ws.send(json.dumps({"type": "auth", "device_id": settings["device_id"], "device_token": settings["device_token"]}))
@@ -343,6 +385,21 @@ class RemoteConnection:
                 backoff = 1
                 ws.settimeout(2)
                 last_ping = time.monotonic()
+
+                # 订阅本地任务生命周期事件：任务开始/结束时主动推给云端，
+                # 浏览器据此替代「每 5 秒拉一次 /api/local/tasks」的轮询。
+                # 导入失败（如宿主环境未装配 StreamRuntime）只降级为「无推送」，
+                # 不能因此中断设备连接——RPC 主链路必须照常可用。
+                try:
+                    from model.StreamRuntime import (
+                        subscribe_task_events,
+                        unsubscribe_task_events as _unsubscribe_task_events,
+                    )
+
+                    unsubscribe_task_events = _unsubscribe_task_events
+                    subscribe_task_events(on_task_event)
+                except Exception:
+                    _LOGGER.exception("[NexoraRemote] task_event_subscribe_failed")
 
                 def handle(message):
                     try:
@@ -380,6 +437,17 @@ class RemoteConnection:
                                 ws.send(json.dumps({"type": "ping"}))
 
                             last_ping = time.monotonic()
+
+                        # 发任务生命周期事件：worker 线程只入队，统一在这里发。
+                        with task_events_lock:
+                            pending_tasks = task_events[:]
+                            task_events.clear()
+
+                        for frame in pending_tasks:
+                            phase = "task_lifecycle_send"
+
+                            with send_lock:
+                                ws.send(json.dumps(frame, ensure_ascii=False))
 
                         try:
                             phase = "receive_message"
@@ -436,6 +504,13 @@ class RemoteConnection:
                 )
             finally:
                 self.online = False
+
+                # 断线即退订：避免重连期间旧监听器继续往已废弃的队列里塞事件。
+                if unsubscribe_task_events is not None and on_task_event is not None:
+                    try:
+                        unsubscribe_task_events(on_task_event)
+                    except Exception:
+                        _LOGGER.exception("[NexoraRemote] task_event_unsubscribe_failed")
 
                 with task_relays_lock:
                     relays = list(task_relays.values())

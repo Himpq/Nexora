@@ -30,6 +30,7 @@ from .ConversationStore import ConversationStore
 from .AgentLoop import AgentLoop, VISUAL_OUTPUT_GUIDANCE
 from .StreamRuntime import (
     append_chunk_to_conversation,
+    broadcast_conversation_changed,
     get_accumulated_content,
     get_session_meta,
     iter_session_chunks,
@@ -911,14 +912,24 @@ def local_agent_create_conversation():
     # 改全局也只影响之后新建的会话。
     global_permission = get_global_permission_settings()
 
+    # 模型同样从全局默认复制：前端创建会话时不带 model_name（它只知道自己顶栏
+    # 当前选中的会话级模型），留空会让新会话既没有会话模型、也拿不到默认，
+    # 发消息时只能落到 Provider 兜底，表现为「设置页选的默认模型不生效」。
+    requested_model = str(data.get("model_name") or "").strip()
+    default_model = "" if requested_model else _local_default_model_id()
+
     try:
         store.save_settings(conversation_id, {
-            "model_name": str(data.get("model_name") or "").strip(),
+            "model_name": requested_model or default_model,
             "permission_mode": global_permission["mode"],
             "approval_model_id": global_permission["approval_model_id"],
         })
     except Exception:
         _LOGGER.exception("[LocalAgent] init_conversation_settings_failed conversation=%s", conversation_id)
+
+    # 会话列表没有推送通道，本地前端要等用户手动刷新才看到新会话。
+    # 广播一次让所有观察者（含云端 Remote 面板）即时刷新列表。
+    broadcast_conversation_changed("created", conversation_id, title)
 
     return jsonify({"success": True, "conversation_id": conversation_id, "title": title})
 
@@ -1016,6 +1027,8 @@ def local_agent_delete_conversation(conv_id: str):
     if not deleted:
         return jsonify({"success": False, "message": "会话不存在"}), 404
 
+    broadcast_conversation_changed("deleted", conv_id)
+
     return jsonify({"success": True, "conversation_id": conv_id})
 
 
@@ -1033,6 +1046,8 @@ def local_agent_update_conversation_title(conv_id: str):
 
     if not updated:
         return jsonify({"success": False, "message": "会话不存在"}), 404
+
+    broadcast_conversation_changed("updated", conv_id, title)
 
     return jsonify({"success": True, "conversation_id": conv_id, "title": title})
 
@@ -1586,29 +1601,21 @@ def local_agent_user_info():
 def local_agent_config():
     """模型列表：本地 Provider 列表展开为 chat.js 期望的数组格式。
 
-    default_model 是「用户上次选定的模型」：本地服务端口每次启动随机分配，
-    WebView 的 localStorage 按 origin 隔离，重启后必然为空，任何依赖
-    localStorage 的兜底都会失效。因此这里由后端作为唯一权威来源返回，
-    前端不再自行缓存选中项。
+    default_model 是「设置页选定的默认 Provider 模型」（providers.json 的
+    default_id 对应的模型）。本地服务端口每次启动随机分配，WebView 的
+    localStorage 按 origin 隔离，重启后必然为空，任何依赖 localStorage 的
+    兜底都会失效。因此这里由后端作为唯一权威来源返回，前端不再自行缓存。
+
+    注意：这里不再让「顶栏最后选过的模型」覆盖 default_model。顶栏换模型只
+    作用于当前会话（会话级设置），新会话一律回到设置页的默认，两者职责分离。
     """
     models, default_model = _local_agent_model_catalog()
-    model_ids = {model["id"] for model in models}
-    selected_model_id = str(config.get("local_selected_model_id", "") or "").strip()
-
-    if selected_model_id not in model_ids:
-        selected_model_id = ""
-
-    # 用户选过的模型优先于 Provider 的 default_id：后者只是「没选过」时的兜底，
-    # 两者混用会让顶栏显示与实际使用的模型对不上。
-    if selected_model_id:
-        default_model = selected_model_id
 
     return jsonify({
         "success": True,
         "models": models,
         "providers": {},
         "default_model": default_model,
-        "local_selected_model_id": selected_model_id,
     })
 
 
@@ -1637,24 +1644,15 @@ def _local_agent_model_catalog() -> tuple[list[dict[str, Any]], str]:
     return models, default_model
 
 
-@_local_bp.route("/api/local/default-model", methods=["POST"])
-def local_agent_save_default_model():
-    """保存没有活动会话时选定的模型，作为之后新会话的默认模型。"""
-    raw_body = request.get_json(silent=True)
-    body = raw_body if isinstance(raw_body, dict) else {}
-    model_id = str(body.get("model_id") or "").strip()
+def _local_default_model_id() -> str:
+    """设置页选定的默认模型 id（Provider 的 default_id 展开为 provider_id/model）。
 
-    if not model_id:
-        return jsonify({"success": False, "message": "模型 ID 不能为空"}), 400
+    新建会话用它作为会话级模型的初值；未配置任何 Provider 时返回空串，
+    由发送路径回落到 Provider 兜底。
+    """
+    _, default_model = _local_agent_model_catalog()
 
-    models, _ = _local_agent_model_catalog()
-
-    if model_id not in {model["id"] for model in models}:
-        return jsonify({"success": False, "message": "所选模型当前不可用"}), 400
-
-    config.set("local_selected_model_id", model_id)
-
-    return jsonify({"success": True, "local_selected_model_id": model_id})
+    return default_model
 
 
 @_local_bp.route("/api/local_agent/register", methods=["POST"])

@@ -16,6 +16,10 @@ from flask import Blueprint, current_app, jsonify, request, session
 
 remote_gateway_bp = Blueprint("remote_gateway", __name__)
 
+# 任务生命周期事件的浏览器广播出口，由 server.py 组装层注入。
+# 未注入时推送静默降级，浏览器退化为兜底轮询。
+_TASK_LIFECYCLE_PUBLISHER = None
+
 
 class DeviceGateway:
     def __init__(self, path: Path):
@@ -266,6 +270,52 @@ def _gateway():
     return current_app.extensions["nexoracode_gateway"]
 
 
+def configure_task_lifecycle_publisher(publisher):
+    """注入任务生命周期事件的浏览器广播出口。
+
+    与通知/邮件一致：由组装层（server.py）注入已有的 browser WSS 通道，
+    网关自身不导入 server 模块——server.py 以 __main__ 启动，`from server import`
+    会二次执行整个模块并拿到另一套全局状态，广播必然失效。
+    """
+    if not callable(publisher):
+        raise ValueError("task lifecycle publisher must be callable")
+
+    global _TASK_LIFECYCLE_PUBLISHER
+    _TASK_LIFECYCLE_PUBLISHER = publisher
+
+
+def _broadcast_task_lifecycle(connection, payload):
+    """把电脑端推来的任务生命周期事件广播给该用户的浏览器。
+
+    电脑端在任务开始/结束时主动上报，浏览器据此替代「每 5 秒拉一次
+    /api/local/tasks」的轮询：只在事件到达时才去同步活动任务。
+    事件本身不含对话内容，只有会话/流 id 与状态。
+    """
+    event = str(payload.get("event") or "")
+
+    if event not in {"task_started", "task_finished"}:
+        return
+
+    owner = str(connection.get("owner") or "").strip()
+    publisher = _TASK_LIFECYCLE_PUBLISHER
+
+    if not owner or publisher is None:
+        # 未注入广播出口时静默降级：浏览器退化为兜底轮询，
+        # 绝不能因为推送不可用而中断设备连接。
+        return
+
+    try:
+        publisher(owner, "remote_task_changed", {
+            "event": event,
+            "stream_id": str(payload.get("stream_id") or ""),
+            "conversation_id": str(payload.get("conversation_id") or ""),
+            "status": str(payload.get("status") or ""),
+        })
+    except Exception:
+        # 广播失败只影响实时性，不影响任务本身。
+        pass
+
+
 def _normalize_origin(value: str) -> str:
     """归一化来源字符串：去掉末尾斜杠与默认端口。
 
@@ -418,6 +468,12 @@ def _install(state):
                         ws.send(json.dumps({"type": "pong"}))
                 elif payload.get("type") == "rpc_result":
                     gateway.complete(connection, payload.get("request_id"), payload.get("result"))
+                elif payload.get("type") == "task_lifecycle":
+                    # 推送失败不能影响设备连接：任务主链路必须继续可用。
+                    try:
+                        _broadcast_task_lifecycle(connection, payload)
+                    except Exception:
+                        pass
                 elif payload.get("type") in {"task_event", "task_state", "task_stream_error", "task_stream_gap"}:
                     gateway.forward_task_frame(connection, payload)
         except Exception as exc:

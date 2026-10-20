@@ -41,6 +41,10 @@ if not _DATA_DIR.exists():
 _CONFIG_PATH = _DATA_DIR / "config.json"
 _DEPRECATED_LOCAL_KEYS = {
     "preferred_model_id",
+    # 顶栏「上次选过的模型」不再作为新会话默认来源：新会话一律用设置页的
+    # 默认 Provider（providers.json 的 default_id）。旧键留在配置里只会误导，
+    # 这里登记后由 _drop_deprecated_local_keys 在读写时清理。
+    "local_selected_model_id",
 }
 _DEFAULTS = {
     "nexora_url": "",
@@ -48,7 +52,6 @@ _DEFAULTS = {
     "shell_whitelist": [],
     "local_tool_permission_mode": "confirm",
     "local_tool_approval_model_id": "",
-    "local_selected_model_id": "",
     "local_custom_system_prompt": "",
     "local_read_agents_md": True,
     # 外观主题偏好：light / dark / system（跟随系统）。存服务端配置而非 localStorage，

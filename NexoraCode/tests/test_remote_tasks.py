@@ -349,6 +349,115 @@ class RemoteTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_task_lifecycle_pushes_to_browser_without_polling(self):
+        """任务开始/结束经设备 WS 主动推给浏览器，替代 5 秒轮询。
+
+        验证链路：本地 start_session/_finish 广播 → 电脑端设备 WS 上报
+        task_lifecycle → 云端 gateway 转成 remote_task_changed 广播给该用户。
+        """
+        from flask import Flask, jsonify
+        from werkzeug.serving import make_server
+
+        cloud = Flask("test_cloud_lifecycle", root_path=self.temp.name)
+        cloud.secret_key = "test-only-secret"
+        cloud.register_blueprint(self.gateway_module.remote_gateway_bp)
+        gateway = cloud.extensions["nexoracode_gateway"]
+        server = make_server("127.0.0.1", 0, cloud, threaded=True)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        local = Flask("test_local_lifecycle")
+        local.register_blueprint(self.tasks.task_bp)
+
+        @local.get("/api/conversations")
+        def conversations():
+            return jsonify({"conversations": self.store.list()})
+
+        # 云端广播出口：与 server.py 组装层一致，通过注入配置。
+        broadcasts = []
+        broadcasts_lock = threading.Lock()
+        received = threading.Event()
+
+        def fake_send_browser_event_to_user(username, event_type, payload):
+            with broadcasts_lock:
+                broadcasts.append((username, event_type, payload))
+
+            if event_type == "remote_task_changed":
+                received.set()
+
+        self.gateway_module.configure_task_lifecycle_publisher(fake_send_browser_event_to_user)
+        self.addCleanup(
+            lambda: self.gateway_module.configure_task_lifecycle_publisher(lambda *args: None)
+        )
+
+        release = threading.Event()
+
+        def factory(body):
+            def worker(push, set_cid, stage, cancelled):
+                push({"type": "content", "content": "生命周期推送测试"})
+                release.wait(10)
+
+            return worker
+
+        self.tasks.set_worker_factory(factory)
+        sys.modules["model"] = sys.modules["test_model"]
+        sys.modules["model.ConversationStore"] = self.store_module
+        sys.modules["model.StreamRuntime"] = self.runtime
+        remote = module("isolated_lifecycle_remote", ROOT / "core/remote_connection.py")
+        connection = remote.RemoteConnection(local)
+
+        try:
+            code = gateway.pairing_code("alice")
+            connection.pair({
+                "server_url": f"http://127.0.0.1:{server.server_port}",
+                "code": code,
+                "name": "test computer",
+            })
+
+            for _ in range(200):
+                if connection.online:
+                    break
+                time.sleep(0.025)
+
+            self.assertTrue(connection.online, connection.error)
+            device_id = connection.status()["device_id"]
+            result = gateway.rpc("alice", device_id, {"path": "/api/local/tasks", "method": "POST", "body": {
+                "request_id": "lifecycle-request-1", "conversation_id": self.cid, "message": "lifecycle task",
+            }})
+            self.assertEqual(result["status"], 200)
+            sid = result["body"]["stream_id"]
+
+            # task_started 必须主动到达，且不依赖任何浏览器轮询请求。
+            self.assertTrue(received.wait(5), "task_started 未在超时内推送到浏览器")
+
+            with broadcasts_lock:
+                started = [row for row in broadcasts if row[2].get("event") == "task_started"]
+
+            self.assertTrue(started, "缺少 task_started 广播")
+            self.assertEqual(started[0][0], "alice")
+            self.assertEqual(started[0][1], "remote_task_changed")
+            self.assertEqual(started[0][2]["stream_id"], sid)
+            self.assertEqual(started[0][2]["conversation_id"], self.cid)
+
+            # 任务结束同样主动推送，浏览器据此清除运行标记。
+            with broadcasts_lock:
+                broadcasts.clear()
+
+            received.clear()
+            release.set()
+            self.assertTrue(received.wait(5), "task_finished 未在超时内推送到浏览器")
+
+            with broadcasts_lock:
+                finished = [row for row in broadcasts if row[2].get("event") == "task_finished"]
+
+            self.assertTrue(finished, "缺少 task_finished 广播")
+            self.assertEqual(finished[0][2]["stream_id"], sid)
+            self.assertEqual(finished[0][2]["status"], "done")
+        finally:
+            release.set()
+            connection.pause()
+            server.shutdown()
+            server.server_close()
+
     def test_remote_dispatch_enqueues_and_guides_while_waiting_for_permission(self):
         from flask import Flask
 

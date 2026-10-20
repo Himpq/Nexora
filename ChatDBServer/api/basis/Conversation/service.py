@@ -24,6 +24,7 @@ from . import messages as messages_mod
 from . import telemetry as telemetry_mod
 from . import turn_state as turn_state_mod
 from .errors import ConversationIndexError, ConversationNotFoundError, ConversationValidationError
+from .events import publish_conversation_changed
 from .migration import migrate_all, migrate_conversation_file, migrate_single_conversation_data
 from .repository import (
     conversation_base_path,
@@ -322,7 +323,12 @@ class ConversationService:
             skeleton = build_v4_skeleton(new_id, title=title, scope=scope_payload)
             # 兼容：若调用方传入了旧 metadata.nexoracode_project，暂不持久化于 v4 主体，索引层自行提取
             self._save_v4(new_id, skeleton)
-            return new_id
+
+        # 广播放在锁外：推送不参与写盘，也不该占用会话锁阻塞其它请求。
+        # 会话列表没有拉取通道的一方（其他窗口、云端浏览器、桌面端）据此即时刷新。
+        publish_conversation_changed(self.username, "created", new_id, str(skeleton.get("title") or title))
+
+        return new_id
 
     def get_conversation(self, conversation_id: str) -> Dict[str, Any]:
         """返回会话深拷贝（完整 v4）。"""
@@ -1163,6 +1169,9 @@ class ConversationService:
             validate_v4_conversation(data)
             safe_write_json(path, data, indent=2)
             index_mod.sync_index_from_file(self.username, path, data)
+
+        # 标题变更（手动重命名与自动生成标题都走这里）后广播，其它端即时更新列表标题。
+        publish_conversation_changed(self.username, "updated", conversation_id, data["title"])
 
     def set_pin(self, conversation_id: str, pin: bool = True) -> None:
         with conversation_update_session(self.username, conversation_id) as (path, data):

@@ -16,6 +16,7 @@ from .trash import ConversationTrashService
 from .context_reader import ConversationContextReader
 from .repair import recover_conversation_bytes
 from .routes import conversation_bp
+from .events import configure_conversation_realtime, publish_conversation_changed
 from .asset_store import (
     cleanup_conversation_assets,
     clone_referenced_assets,
@@ -40,6 +41,8 @@ __all__ = [
     "ConversationTrashService",
     "ConversationContextReader",
     "conversation_bp",
+    "configure_conversation_realtime",
+    "publish_conversation_changed",
     "recover_conversation_bytes",
     "persist_conversation_image_bytes",
     "asset_store",
