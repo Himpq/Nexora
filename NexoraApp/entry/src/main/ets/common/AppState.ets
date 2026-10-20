@@ -54,6 +54,11 @@ export class AppState {
     // 侧栏视图切换：对话列表 / 知识库列表
     sidebarView: 'chat' | 'knowledge' | 'remote' = 'chat';
 
+    // 电脑视图刷新信号：切到「电脑」时 +1，驱动 RemoteSidebarSection 重新拉取设备状态。
+    // ArkUI 的 if 分支会复用已创建的组件实例，切回来不再触发 aboutToAppear，
+    // 必须由外部信号显式驱动刷新，否则设备在线状态要退出重进才更新。
+    remoteRefreshSeq: number = 0;
+
     // 知识库列表
     knowledgeList: KnowledgeItem[] = [];
     knowledgeLoading: boolean = false;
@@ -133,12 +138,6 @@ export class AppState {
         return this.selectedModelId.length > 0 ? this.selectedModelId : '选择模型';
     }
 
-    // 将模型标签同步到 AppStorage，驱动 @StorageProp('inputModelLabel') 的组件刷新
-    private syncModelLabelToStorage(): void {
-        AppStorage.setOrCreate('inputModelLabel', this.selectedModelLabel);
-        hilog.info(DOMAIN, TAG, '[syncToStorage] wrote inputModelLabel=%{public}s', this.selectedModelLabel);
-    }
-
     // ---------- 生命周期 ----------
     // 恢复本地持久化状态：后端地址、会话 Cookie、生成参数
     async restore(context: common.UIAbilityContext): Promise<void> {
@@ -161,7 +160,6 @@ export class AppState {
         HttpUtil.setBackendUrl(this.backendUrl);
         HttpUtil.setSessionCookie(await PreferencesUtil.loadSessionCookie(context));
         this.selectedModelLabel = this.computeModelLabel();
-        this.syncModelLabelToStorage();
         hilog.info(DOMAIN, TAG, 'state restored, backend=%{public}s', this.backendUrl);
     }
 
@@ -222,7 +220,6 @@ export class AppState {
         this.notesMutationSeq = 0;
         this.notesRequestSeq += 1;
         this.notesRemoteReady = false;
-        this.syncModelLabelToStorage();
     }
 
     // ---------- 配置 ----------
@@ -243,7 +240,6 @@ export class AppState {
         this.selectedModelId = modelId;
         this.selectedModelLabel = this.computeModelLabel();
         hilog.info(DOMAIN, TAG, '[selectModel] computed label=%{public}s', this.selectedModelLabel);
-        this.syncModelLabelToStorage();
 
         if (this.context !== null) {
             await PreferencesUtil.saveSelectedModel(this.context, modelId);
@@ -378,7 +374,6 @@ export class AppState {
         }
 
         this.selectedModelLabel = this.computeModelLabel();
-        this.syncModelLabelToStorage();
     }
 
     async refreshConversations(): Promise<void> {
@@ -513,6 +508,10 @@ export class AppState {
 
         if (view === 'knowledge') {
             this.refreshKnowledgeList();
+        }
+
+        if (view === 'remote') {
+            this.remoteRefreshSeq += 1;
         }
     }
 

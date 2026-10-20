@@ -13,6 +13,19 @@ export interface RemoteConversation {
     title: string;
     project: Object | null;
     projectPath: string;
+    updatedAt: number;
+}
+
+/** 电脑上正在运行或最近结束的任务，用于 App 重进后恢复进度。 */
+export interface RemoteTaskSession {
+    streamId: string;
+    conversationId: string;
+    status: string;
+    lastSequence: number;
+    historyUserCount: number | null;
+    message: string;
+    isRegenerate: boolean;
+    skipUserMessage: boolean;
 }
 
 export interface RemoteTaskBody {
@@ -76,7 +89,26 @@ export class NexoraCodeApi {
             const row: Record<string, Object> = raw as Record<string, Object>;
             const metadata: Record<string, Object> | null = Json.object(row, 'metadata');
             const project: Record<string, Object> | null = metadata === null ? null : Json.object(metadata, 'nexoracode_project');
-            return { id: Json.string(row, 'conversation_id'), title: Json.string(row, 'title'), project: project, projectPath: project === null ? '' : Json.string(project, 'path') };
+            return { id: Json.string(row, 'conversation_id'), title: Json.string(row, 'title'), project: project, projectPath: project === null ? '' : Json.string(project, 'path'), updatedAt: Json.number(row, 'updated_at') };
+        });
+    }
+
+    /** 电脑当前与最近的任务列表：App 重进时用它找回仍在运行的任务并接管进度。 */
+    static async tasks(deviceId: string): Promise<RemoteTaskSession[]> {
+        const data: Record<string, Object> = await NexoraCodeApi.rpc(deviceId, '/api/local/tasks');
+        return Json.array(data, 'sessions').map((raw: Object): RemoteTaskSession => {
+            const row: Record<string, Object> = raw as Record<string, Object>;
+            const userCount: Object | undefined = row['history_user_count'];
+            return {
+                streamId: Json.string(row, 'stream_id'),
+                conversationId: Json.string(row, 'conversation_id'),
+                status: Json.string(row, 'status'),
+                lastSequence: Json.number(row, 'last_seq'),
+                historyUserCount: typeof userCount === 'number' ? userCount : null,
+                message: Json.string(row, 'message'),
+                isRegenerate: Json.boolean(row, 'is_regenerate'),
+                skipUserMessage: Json.boolean(row, 'skip_user_message')
+            };
         });
     }
 

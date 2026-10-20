@@ -60,12 +60,20 @@ export function getRunningTask(conversationId: string): RunningTaskInfo | null {
 
 function handleEvent(event: LocalTaskEvent): void {
     const conversationId = String(event.conversation_id || '').trim()
+    const store = useConversationStore()
+
+    // 会话列表变更：本地/云端新建、删除、改标题后由后端广播。
+    // 会话列表本身没有推送通道，不处理就要等用户手动刷新才看到新会话。
+    // 必须在 conversation_id 空值守卫之前处理：删除事件不保证带 id 之外的信息。
+    if (event.type === 'conversation_changed') {
+        void store.loadConversations()
+
+        return
+    }
 
     if (!conversationId) {
         return
     }
-
-    const store = useConversationStore()
 
     if (event.type === 'task_started') {
         const info: RunningTaskInfo = {

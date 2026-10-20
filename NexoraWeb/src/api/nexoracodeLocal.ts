@@ -180,21 +180,6 @@ export async function saveLocalThemePreference(theme: string): Promise<void> {
     }
 }
 
-/** 保存新会话使用的全局默认模型。 */
-export async function saveLocalDefaultModel(modelId: string): Promise<void> {
-    const data = await apiFetch<{ success: boolean; message?: string }>(
-        '/api/local/default-model',
-        {
-            method: 'POST',
-            body: JSON.stringify({ model_id: modelId }),
-        },
-    )
-
-    if (!data.success) {
-        throw new Error(data.message || '保存默认模型失败')
-    }
-}
-
 export async function saveLocalPermissionSettings(
     mode: LocalPermissionMode,
     approvalModelId: string,
@@ -338,9 +323,9 @@ export async function resolveLocalToolPermission(
 
 /** 任务生命周期事件（本地 /api/local/tasks/watch）。 */
 export interface LocalTaskEvent {
-    type: 'task_started' | 'task_finished'
-    stream_id: string
-    conversation_id: string
+    type: 'task_started' | 'task_finished' | 'conversation_changed'
+    stream_id?: string
+    conversation_id?: string
     status?: string
     /** 本轮的请求正文（task_started 携带），用于本地接管时补用户气泡。 */
     message?: string
@@ -351,6 +336,10 @@ export interface LocalTaskEvent {
     history_user_count?: number | null
     /** 建连快照补发的历史运行任务（订阅前已启动）。 */
     snapshot?: boolean
+    /** conversation_changed 携带：created / deleted / updated。 */
+    action?: string
+    /** conversation_changed 携带：会话标题（创建/改标题时）。 */
+    title?: string
 }
 
 /**

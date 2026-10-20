@@ -4,8 +4,13 @@
  * 职责:
  *   - 模型目录 / 当前选中模型
  *   - /api/config 结果 localStorage 缓存(避免每次进入都拉取,对齐原版行为)
- *   - 本地 Code 的选中模型完全由后端持久化(local_selected_model_id),
- *     不读也不写 localStorage
+ *   - 本地 Code 的「新会话默认模型」由后端决定(providers.json 的 default_id),
+ *     前端不持久化任何全局选中项
+ *
+ * 本地 Code 的模型职责划分:
+ *   新会话  → 后端按设置页的默认 Provider 复制一份到会话设置;
+ *   历史会话 → 用该会话自己保存的 model_name;
+ *   顶栏换模型 → 只写当前会话,不影响新会话默认。
  *
  * 为什么本地 Code 不能用 localStorage:
  *   本地服务端口每次启动随机分配(core/server.py:bind_local_port),窗口 URL 是
@@ -20,9 +25,7 @@ import { fetchAppConfig, normalizeModelItems, type AppConfig, type ModelItem } f
 import {
     fetchLocalConversationSettings,
     saveLocalConversationSettings,
-    saveLocalDefaultModel,
 } from '@/api/nexoracodeLocal'
-import { showError } from '@/stores/notify'
 
 const IS_NEXORACODE = import.meta.env.MODE === 'nexoracode'
 
@@ -34,8 +37,6 @@ const CONFIG_CACHE_KEY = IS_NEXORACODE ? 'nexoracode.config' : 'nexora.config'
 
 /** config 缓存有效期(5 分钟) */
 const CONFIG_CACHE_TTL = 5 * 60 * 1000
-
-let defaultModelSaveQueue: Promise<void> = Promise.resolve()
 
 interface ConfigCacheEntry {
     data: AppConfig
@@ -95,14 +96,6 @@ function writeConfigCache(data: AppConfig): void {
     } catch {
         // 缓存写入失败不影响主流程
     }
-}
-
-/** 按用户选择顺序写默认模型，避免快速连续切换时旧请求最后落盘。 */
-function persistLocalDefaultModel(modelId: string): Promise<void> {
-    const pending = defaultModelSaveQueue.then(() => saveLocalDefaultModel(modelId))
-    defaultModelSaveQueue = pending.catch(() => undefined)
-
-    return pending
 }
 
 export const useModelStore = defineStore('model', {
@@ -198,8 +191,9 @@ export const useModelStore = defineStore('model', {
         /**
          * 选中模型并持久化。
          *
-         * 有当前会话时写该会话的独立设置（只影响本会话）；没有会话时更新全局默认
-         * （作为之后新建会话的初值）。
+         * 有当前会话时写该会话的独立设置（只影响本会话）；没有会话时只更新
+         * 顶栏显示，不落盘——新会话的模型由后端按设置页的默认 Provider 复制，
+         * 顶栏临时换模型不应改变「新会话用哪个模型」这件事。
          */
         async selectModel(modelId: string): Promise<void> {
             const conversationId = IS_NEXORACODE ? String(this.activeConversationId || '').trim() : ''
@@ -218,15 +212,9 @@ export const useModelStore = defineStore('model', {
             this.selectedId = modelId
 
             if (IS_NEXORACODE) {
-                // 本地 Code：只写后端，default_model 由 /api/config 回读。
-                // 不维护 localStorage 副本（换端口即失效），也不写 config 缓存
-                // （loadModels 在本地 Code 下已不读缓存）。
-                try {
-                    await persistLocalDefaultModel(modelId)
-                } catch (error) {
-                    showError(error instanceof Error ? error.message : '保存默认模型失败')
-                }
-
+                // 本地 Code：无会话时只改顶栏显示。新会话的模型由后端
+                // （/api/conversations 创建时按 providers.json 的 default_id 复制）
+                // 决定，这里不写任何持久化，避免顶栏临时选择污染新会话默认。
                 return
             }
 

@@ -19,7 +19,6 @@ export interface ModelItem {
 export interface AppConfig {
     models?: Array<ModelItem | string>
     default_model?: string
-    local_selected_model_id?: string
     [key: string]: unknown
 }
 

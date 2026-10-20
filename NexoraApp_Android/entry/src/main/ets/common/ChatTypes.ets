@@ -546,6 +546,114 @@ export function messageFromHistory(raw: RawHistoryMessage, index: number): ChatM
     return message;
 }
 
+// ---------- 远程（电脑）历史合并 ----------
+
+// 电脑端 AgentLoop 每个工具轮单独落盘一条 assistant（无正文、只有工具步骤），
+// 逐条渲染会变成一串只有模型徽章的碎气泡。判断是否这种「纯工具轮」。
+function isToolOnlyAssistant(message: ChatMessage): boolean {
+    if (message.isUser) {
+        return false;
+    }
+
+    let hasToolStep: boolean = false;
+
+    for (const segment of message.segments) {
+        if (segment.type === 'function_call' || segment.type === 'function_result') {
+            hasToolStep = true;
+            continue;
+        }
+
+        if ((segment.type === 'content' || segment.type === 'error') && segment.text.trim().length > 0) {
+            return false;
+        }
+    }
+
+    return hasToolStep;
+}
+
+// 把连续的纯工具轮并入下一条有正文的 assistant；以工具轮收尾时单独成条。
+// 口径与 Web 端 mergeToolOnlyAssistantRows 一致：只并入 assistant，遇到 user 先落当前批次。
+export function mergeToolOnlyAssistantRows(messages: ChatMessage[]): ChatMessage[] {
+    const merged: ChatMessage[] = [];
+    let pendingSegments: MessageSegment[] = [];
+    let pendingToolCalls: ToolCallItem[] = [];
+    let pendingModelName: string = '';
+
+    const flushPending = (): void => {
+        if (pendingSegments.length === 0 && pendingToolCalls.length === 0) {
+            return;
+        }
+
+        const standalone: ChatMessage = new ChatMessage(merged.length, 'assistant', '');
+        standalone.segments = pendingSegments;
+        standalone.toolCalls = pendingToolCalls;
+        standalone.modelName = pendingModelName;
+        rebuildFlatFromSegments(standalone);
+        merged.push(standalone);
+        pendingSegments = [];
+        pendingToolCalls = [];
+        pendingModelName = '';
+    };
+
+    for (const message of messages) {
+        if (isToolOnlyAssistant(message)) {
+            pendingSegments = pendingSegments.concat(message.segments);
+            pendingToolCalls = pendingToolCalls.concat(message.toolCalls);
+
+            if (message.modelName.length > 0) {
+                pendingModelName = message.modelName;
+            }
+
+            continue;
+        }
+
+        if ((pendingSegments.length > 0 || pendingToolCalls.length > 0) && !message.isUser) {
+            message.segments = pendingSegments.concat(message.segments);
+            message.toolCalls = pendingToolCalls.concat(message.toolCalls);
+
+            if (message.modelName.length === 0) {
+                message.modelName = pendingModelName;
+            }
+
+            rebuildFlatFromSegments(message);
+            pendingSegments = [];
+            pendingToolCalls = [];
+            pendingModelName = '';
+            merged.push(message);
+            continue;
+        }
+
+        flushPending();
+        merged.push(message);
+    }
+
+    flushPending();
+
+    for (let i: number = 0; i < merged.length; i++) {
+        merged[i].index = i;
+    }
+
+    return merged;
+}
+
+// 运行中任务恢复时，历史里该任务已落盘的部分（第 historyUserCount+1 条 user 起）
+// 不参与渲染——当前任务整轮由事件重放重建，避免落盘碎片与重放内容重复展示。
+export function truncateHistoryForTask(messages: ChatMessage[], historyUserCount: number): ChatMessage[] {
+    let seenUsers: number = 0;
+
+    for (let i: number = 0; i < messages.length; i++) {
+        if (messages[i].isUser) {
+            seenUsers++;
+
+            if (seenUsers > historyUserCount) {
+                return messages.slice(0, i);
+            }
+        }
+    }
+
+    return messages;
+}
+
 // v4 trace → 步骤序列。events 存在时保序保 type 直接使用（与后端 extract 一致）；
 // 否则把四桶投影为 v3 步骤形态（content_segments 保留自身 type——推理段是
 // reasoning_content，不能像后端回放投影那样压成 content，否则鸿蒙端丢思考块）

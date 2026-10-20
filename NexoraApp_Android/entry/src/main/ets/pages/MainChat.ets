@@ -13,7 +13,7 @@ import { display, promptAction } from '@kit.ArkUI';
 import { ApiService } from '../common/ApiService';
 import { AppState } from '../common/AppState';
 import { ConversationItem, greetingOfHour, KnowledgeItem, QuickAction, QUICK_ACTIONS, sanitizeDisplayName } from '../common/AppConfig';
-import { ChatMessage, TokenUsage, ToolResultPayload, RawHistoryMessage, makeToolResultPayload, messageFromHistory } from '../common/ChatTypes';
+import { ChatMessage, TokenUsage, ToolResultPayload, RawHistoryMessage, makeToolResultPayload, messageFromHistory, mergeToolOnlyAssistantRows, truncateHistoryForTask } from '../common/ChatTypes';
 import { Json } from '../common/JsonUtil';
 import { NexoraCodeApi, RemoteModel, RemoteTaskBody, RemoteTaskSession } from '../common/NexoraCodeApi';
 import { chatStream, ConversationModePayload, StreamListener, StreamOptions } from '../common/ChatStreamClient';
@@ -76,9 +76,12 @@ const JUMP_ANIMATE_SETTLE_DELAY: number = 360;
 const SCROLL_GAP_WARN_MS: number = 17;
 // 帧间隔告警的最小间隔（ms）：限流，避免日志本身成为滚动开销
 const SCROLL_GAP_LOG_INTERVAL: number = 120;
-// 列表预取窗口：给惯性滑动留出已完成创建与测量的跑道，同时避免整份历史被预建。
+// 列表预取窗口：给惯性滑动留出已完成创建与测量的跑道，同时避免整份历史被整份预建。
 const CACHE_MIN_ROWS: number = 8;
 const CACHE_MAX_ROWS: number = 16;
+// 远程任务轮询间隔与失联上限：电脑进程被杀后 session 不再返回，轮询靠超时收尾
+const REMOTE_POLL_INTERVAL_MS: number = 1200;
+const REMOTE_POLL_TIMEOUT_MS: number = 15 * 60 * 1000;
 
 class RemotePermissionGrant {
     path: string = '';
@@ -138,6 +141,7 @@ export struct MainChat {
     @State private remoteModels: RemoteModel[] = [];
     private remotePollTimer: number = -1;
     private remotePollBusy: boolean = false;
+    private remotePollLastEventAt: number = 0;
     private remoteSessionEpoch: number = 0;
 
     // ---------- 多会话并行缓冲 ----------
@@ -395,9 +399,6 @@ export struct MainChat {
                             },
                             onStop: () => {
                                 this.stopStreaming();
-                            },
-                            onPickModel: () => {
-                                this.openSheetModel();
                             }
                         });
                     }
@@ -1037,8 +1038,6 @@ export struct MainChat {
                     hilog.info(DOMAIN, TAG, '[onPicked] after selectModel, app.selectedModelId=%{public}s app.selectedModelLabel=%{public}s',
                         this.app.selectedModelId, this.app.selectedModelLabel);
                     this.syncModelLabel();
-                    hilog.info(DOMAIN, TAG, '[onPicked] after syncModelLabel, AppStorage inputModelLabel=%{public}s',
-                        AppStorage.get<string>('inputModelLabel'));
                     this.closeSheet();
                 }
             });
@@ -1329,6 +1328,8 @@ export struct MainChat {
         this.loadError = '';
         this.hasMoreMessages = false;
         this.oldestLoadedIndex = 0;
+        // 历史经云端转发到电脑，耗时较长：加载期间显示加载态，避免误显"还没有消息"空态
+        this.loadingHistory = true;
 
         try {
             const id: string = remoteId.length > 0 ? remoteId : await NexoraCodeApi.createConversation(deviceId, project);
@@ -1341,13 +1342,21 @@ export struct MainChat {
             this.title = remoteTitle.length > 0 ? remoteTitle : '电脑对话';
             this.replaceMessages([]);
 
+            // 先保存运行任务快照，再读取可能耗时较长的历史；随后仍可从事件序号零接管并回放。
+            const tasks: RemoteTaskSession[] = await NexoraCodeApi.tasks(deviceId);
+
+            if (epoch !== this.remoteSessionEpoch || deviceId !== this.remoteDeviceId
+                || id !== this.conversationId) {
+                return;
+            }
+
             const data: Record<string, Object> = await NexoraCodeApi.rpc(deviceId, '/api/conversations/' + id + '/messages');
 
             if (epoch !== this.remoteSessionEpoch) {
                 return;
             }
 
-            const history: ChatMessage[] = [];
+            let history: ChatMessage[] = [];
 
             for (const raw of Json.array(data, 'messages')) {
                 const row: Record<string, Object> = raw as Record<string, Object>;
@@ -1356,20 +1365,18 @@ export struct MainChat {
                 history.push(message);
             }
 
+            const activeTask: RemoteTaskSession | undefined = tasks.find((task: RemoteTaskSession): boolean =>
+                task.conversationId === id && (task.status === 'running' || task.status === 'cancelling'));
+
+            if (activeTask !== undefined && activeTask.historyUserCount !== null) {
+                history = truncateHistoryForTask(history, activeTask.historyUserCount);
+            }
+
+            history = mergeToolOnlyAssistantRows(history);
             this.replaceMessages(history);
             this.applyQuestionLocks(id, history);
             this.scrollOverlayState.activeTurnIndex = this.computeActiveTurnOfLastMessage();
             this.title = remoteTitle.length > 0 ? remoteTitle : this.title;
-
-            const tasks: RemoteTaskSession[] = await NexoraCodeApi.tasks(deviceId);
-
-            if (epoch !== this.remoteSessionEpoch || deviceId !== this.remoteDeviceId
-                || id !== this.conversationId) {
-                return;
-            }
-
-            const activeTask: RemoteTaskSession | undefined = tasks.find((task: RemoteTaskSession): boolean =>
-                task.conversationId === id && (task.status === 'running' || task.status === 'cancelling'));
 
             if (activeTask !== undefined) {
                 this.restoreRemoteTask(activeTask);
@@ -1393,6 +1400,10 @@ export struct MainChat {
                 this.loadError = String(cause);
                 this.closeSidebar();
             }
+        } finally {
+            if (epoch === this.remoteSessionEpoch) {
+                this.loadingHistory = false;
+            }
         }
     }
 
@@ -1405,7 +1416,7 @@ export struct MainChat {
             ? userCount > task.historyUserCount
             : lastUser?.content === task.message;
 
-        if (!task.isRegenerate && task.message.length > 0 && !currentUserSaved) {
+        if (!task.isRegenerate && !task.skipUserMessage && task.message.length > 0 && !currentUserSaved) {
             const userMessage: ChatMessage = ChatMessage.createUser(task.message);
             userMessage.index = this.messages.length;
             this.messages = [...this.messages, userMessage];
@@ -1488,11 +1499,21 @@ export struct MainChat {
             return;
         }
 
-        this.remotePollTimer = setInterval(() => { void this.pollRemoteEvents(); }, 1200);
+        this.remotePollLastEventAt = Date.now();
+        this.remotePollTimer = setInterval(() => { void this.pollRemoteEvents(); }, REMOTE_POLL_INTERVAL_MS);
     }
 
     private async pollRemoteEvents(): Promise<void> {
         if (this.remotePollBusy || this.remoteStreamId.length === 0 || this.remoteDeviceId.length === 0) {
+            return;
+        }
+
+        // 远端若始终不回 session 状态（例如电脑端进程被杀），定时器会永远跑下去。
+        // 连续无新事件达到上限就停轮询并收尾；有持续输出的长任务不会被误判为失联。
+        if (Date.now() - this.remotePollLastEventAt >= REMOTE_POLL_TIMEOUT_MS) {
+            this.stopRemotePolling();
+            this.finishRemoteAssistant();
+            this.notify('电脑端长时间没有响应，已停止等待', 2400);
             return;
         }
 
@@ -1509,7 +1530,7 @@ export struct MainChat {
                 return;
             }
 
-            const assistant: ChatMessage | undefined = this.messages[this.messages.length - 1];
+            let assistant: ChatMessage | undefined = this.messages[this.messages.length - 1];
             const events: Object[] = Json.array(data, 'events');
 
             if (assistant === undefined || assistant.isUser) {
@@ -1531,9 +1552,11 @@ export struct MainChat {
 
                 const segmentType: string = pendingTextType;
                 batchTextChars += pendingText.length;
-                assistant.appendDelta(segmentType === 'content' ? 'content' : 'reasoning', pendingText);
+                // assistant 是 let（queue_turn_start 切气泡会重绑），闭包内窄化失效，断言非空
+                assistant!.appendDelta(segmentType === 'content' ? 'content' : 'reasoning', pendingText);
+
                 if (segmentType === 'content') {
-                    assistant.thinkingExpanded = false;
+                    assistant!.thinkingExpanded = false;
                     contentChanged = true;
                 }
                 pendingText = '';
@@ -1585,6 +1608,50 @@ export struct MainChat {
                     flushTextDelta();
                     assistant.appendDelta('error', Json.string(event, 'message') || Json.string(event, 'content'));
                     messageChanged = true;
+                } else if (type === 'queue_turn_start') {
+                    // 电脑端队列多轮共用一条流：每轮开始收尾旧气泡并开新一轮 user/assistant。
+                    // message 与末尾 user 相同说明该轮 user 已在界面（本轮发起/重放补过），不重复追加
+                    flushTextDelta();
+
+                    const turnText: string = Json.string(event, 'message');
+                    const lastMessage: ChatMessage | undefined = this.messages[this.messages.length - 1];
+                    const lastUser: ChatMessage | undefined = lastMessage !== undefined && lastMessage.isUser
+                        ? lastMessage : undefined;
+                    const turnUserSaved: boolean = lastUser !== undefined && lastUser.content === turnText;
+
+                    // 空占位气泡（发起/恢复时预建）直接接管，有内容的先收尾再开新气泡
+                    const isEmptyPlaceholder: boolean = assistant.segments.length === 0
+                        && assistant.toolCalls.length === 0 && assistant.content.length === 0
+                        && assistant.reasoning.length === 0;
+
+                    if (isEmptyPlaceholder && turnUserSaved) {
+                        continue;
+                    }
+
+                    if (turnText.length > 0 && !turnUserSaved) {
+                        const turnUser: ChatMessage = ChatMessage.createUser(turnText);
+                        turnUser.index = this.messages.length;
+                        this.messages = [...this.messages, turnUser];
+                        this.itemSource.appendItems(this.buildItems([turnUser]));
+                    }
+
+                    if (isEmptyPlaceholder) {
+                        continue;
+                    }
+
+                    assistant.finish();
+                    this.itemSource.reloadMessage(assistant);
+
+                    const turnAssistant: ChatMessage = ChatMessage.createAssistant();
+                    turnAssistant.index = this.messages.length;
+                    this.messages = [...this.messages, turnAssistant];
+                    this.itemSource.appendItems(this.buildItems([turnAssistant]));
+                    this.rebuildItemIndex();
+                    assistant = turnAssistant;
+                    messageChanged = true;
+                } else if (type === 'model_info') {
+                    assistant.modelName = Json.string(event, 'model_name');
+                    messageChanged = true;
                 }
             }
 
@@ -1603,6 +1670,7 @@ export struct MainChat {
             }
 
             if (appliedCount > 0) {
+                this.remotePollLastEventAt = Date.now();
                 hilog.info(DOMAIN, TAG,
                     '[remote-stream] applied=%{public}d batch=%{public}d chars=%{public}d cursor=%{public}d',
                     appliedCount, events.length, batchTextChars, this.remoteCursor);
@@ -3342,10 +3410,8 @@ export struct MainChat {
 
     // 顶栏模型展示名同步：直接从模型清单按 id 查 label（不经 @Observed getter 链，
     // 排除"getter 依赖收集读不到变更"的边界），查不到时回退原始 id / 引导文案。
-    // 输入栏 chip 已直接绑定 app.selectedModelLabel，无需信号驱动
     private syncModelLabel(): void {
         this.modelLabel = this.labelForModel(this.app.selectedModelId);
-        AppStorage.setOrCreate('inputModelLabel', this.modelLabel);
         hilog.info(DOMAIN, TAG, '[modelLabel] synced id=%{public}s label=%{public}s models=%{public}d',
             this.app.selectedModelId, this.modelLabel, this.app.models.length);
     }

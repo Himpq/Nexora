@@ -1,14 +1,17 @@
 import { Json } from '../../common/JsonUtil';
-import { NexoraCodeApi, RemoteConversation, RemoteDevice } from '../../common/NexoraCodeApi';
-import { FontSize, Radius, Space } from '../../common/DesignToken';
+import { NexoraCodeApi, RemoteConversation, RemoteDevice, RemoteTaskSession } from '../../common/NexoraCodeApi';
+import { FontSize, LineHeight, Motion, Radius, Size, Space } from '../../common/DesignToken';
+import { TimeUtil } from '../../common/TimeUtil';
 
 class RemoteComputerGroup {
     device: RemoteDevice;
     conversations: RemoteConversation[];
+    runningIds: string[];
 
-    constructor(device: RemoteDevice, conversations: RemoteConversation[]) {
+    constructor(device: RemoteDevice, conversations: RemoteConversation[], runningIds: string[]) {
         this.device = device;
         this.conversations = conversations;
+        this.runningIds = runningIds;
     }
 }
 
@@ -28,14 +31,22 @@ class RemoteProjectEntry {
 @Component
 export struct RemoteSidebarSection {
     @Prop activeConversationId: string = '';
+    // 刷新信号：宿主切到「电脑」视图时自增。组件实例会被 ArkUI 复用，
+    // aboutToAppear 只在首次创建时触发，靠该信号驱动后续每次切入的重新拉取。
+    @Prop @Watch('onRefreshSignal') refreshSeq: number = 0;
     onOpenChat: (deviceId: string, conversationId: string, title: string, project: Object | null) => void =
         (_deviceId: string, _conversationId: string, _title: string, _project: Object | null): void => {};
     @State private groups: RemoteComputerGroup[] = [];
     @State private loading: boolean = false;
     @State private error: string = '';
     @State private expandedProjects: string[] = [];
+    @State private pressedConversationKey: string = '';
 
     aboutToAppear(): void {
+        void this.refresh();
+    }
+
+    onRefreshSignal(): void {
         void this.refresh();
     }
 
@@ -49,11 +60,24 @@ export struct RemoteSidebarSection {
 
             for (const device of devices) {
                 if (!device.online) {
-                    groups.push(new RemoteComputerGroup(device, []));
+                    groups.push(new RemoteComputerGroup(device, [], []));
                     continue;
                 }
 
-                groups.push(new RemoteComputerGroup(device, await NexoraCodeApi.conversations(device.id)));
+                // 会话列表与任务状态各取一次：任务状态用于行内「生成中」标记
+                const conversations: RemoteConversation[] = await NexoraCodeApi.conversations(device.id);
+                const tasks: RemoteTaskSession[] = await NexoraCodeApi.tasks(device.id);
+                const runningIds: string[] = [];
+
+                for (const task of tasks) {
+                    if ((task.status === 'running' || task.status === 'cancelling')
+                        && task.conversationId.length > 0
+                        && runningIds.indexOf(task.conversationId) < 0) {
+                        runningIds.push(task.conversationId);
+                    }
+                }
+
+                groups.push(new RemoteComputerGroup(device, conversations, runningIds));
             }
 
             this.groups = groups;
@@ -99,20 +123,44 @@ export struct RemoteSidebarSection {
             : [...this.expandedProjects, key];
     }
 
+    private isRunning(group: RemoteComputerGroup, conversationId: string): boolean {
+        return group.runningIds.indexOf(conversationId) >= 0;
+    }
+
+    private conversationKey(deviceId: string, conversationId: string): string {
+        return deviceId + ':' + conversationId;
+    }
+
+    private timeLabel(updatedAt: number): string {
+        return TimeUtil.short(updatedAt);
+    }
+
     build() {
         Column({ space: Space.sm }) {
+            // 头部对齐本地会话列表的 SectionHeader：标题 + 刷新/加载指示
             Row() {
                 Text('电脑项目')
                     .fontSize(FontSize.small)
                     .fontColor($r('app.color.text_secondary'))
                     .layoutWeight(1);
-                Text(this.loading ? '同步中' : '刷新')
-                    .fontSize(FontSize.caption)
-                    .fontColor($r('app.color.text_brand'))
-                    .onClick(() => { void this.refresh(); });
+
+                if (this.loading) {
+                    LoadingProgress()
+                        .width(32)
+                        .height(32)
+                        .color($r('app.color.brand_primary'));
+                } else {
+                    Text('刷新')
+                        .fontSize(FontSize.caption)
+                        .fontColor($r('app.color.text_brand'))
+                        .height(32)
+                        .textAlign(TextAlign.Center)
+                        .onClick(() => { void this.refresh(); });
+                }
             }
             .width('100%')
-            .padding({ left: Space.lg, right: Space.lg, bottom: Space.xs });
+            .height(32)
+            .padding({ left: Space.lg, right: Space.md, bottom: Space.xs });
 
             if (this.error.length > 0) {
                 Text(this.error)
@@ -130,10 +178,11 @@ export struct RemoteSidebarSection {
                 ForEach(this.groups, (group: RemoteComputerGroup) => {
                     ListItem() {
                         Column({ space: Space.xxs }) {
+                            // 设备行：字号与图标对齐本地功能入口行
                             Row({ space: Space.sm }) {
                                 Image($r('app.media.ic_computer'))
-                                    .width(16)
-                                    .height(16)
+                                    .width(Size.icon)
+                                    .height(Size.icon)
                                     .fillColor($r('app.color.icon_secondary'));
                                 Text(group.device.name)
                                     .fontSize(FontSize.body)
@@ -143,11 +192,12 @@ export struct RemoteSidebarSection {
                                     .textOverflow({ overflow: TextOverflow.Ellipsis });
                                 Text(group.device.online ? '在线' : '离线')
                                     .fontSize(FontSize.caption)
+                                    .lineHeight(LineHeight.caption)
                                     .fontColor(group.device.online ? $r('app.color.text_brand') : $r('app.color.text_tertiary'));
                             }
                             .width('100%')
-                            .height(42)
-                            .padding({ left: Space.md, right: Space.md });
+                            .height(44)
+                            .padding({ left: Space.lg, right: Space.md });
 
                             if (group.device.online) {
                                 ForEach(this.projectsFor(group), (project: RemoteProjectEntry) => {
@@ -185,19 +235,7 @@ export struct RemoteSidebarSection {
 
                                         if (this.isProjectExpanded(group.device.id, project.path)) {
                                             ForEach(project.conversations, (conversation: RemoteConversation) => {
-                                                Text(conversation.title)
-                                                    .fontSize(FontSize.caption)
-                                                    .fontColor(this.activeConversationId === conversation.id
-                                                        ? $r('app.color.text_brand') : $r('app.color.text_secondary'))
-                                                    .maxLines(1)
-                                                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-                                                    .width('100%')
-                                                    .textAlign(TextAlign.Start)
-                                                    .height(34)
-                                                    .padding({ left: Space.xxl, right: Space.md })
-                                                    .borderRadius(Radius.md)
-                                                    .onClick(() => this.onOpenChat(group.device.id,
-                                                        conversation.id, conversation.title, conversation.project));
+                                                this.RemoteConversationRow(group, conversation);
                                             }, (conversation: RemoteConversation) => conversation.id);
                                         }
                                     }
@@ -207,18 +245,7 @@ export struct RemoteSidebarSection {
 
                                 ForEach(group.conversations.filter((conversation: RemoteConversation): boolean =>
                                     conversation.project === null), (conversation: RemoteConversation) => {
-                                    Text(conversation.title)
-                                        .fontSize(FontSize.small)
-                                        .fontColor(this.activeConversationId === conversation.id
-                                            ? $r('app.color.text_brand') : $r('app.color.text_secondary'))
-                                        .maxLines(1)
-                                        .textOverflow({ overflow: TextOverflow.Ellipsis })
-                                        .width('100%')
-                                        .textAlign(TextAlign.Start)
-                                        .height(38)
-                                        .padding({ left: Space.xl, right: Space.md })
-                                        .borderRadius(Radius.md)
-                                        .onClick(() => this.onOpenChat(group.device.id, conversation.id, conversation.title, null));
+                                    this.RemoteConversationRow(group, conversation);
                                 }, (conversation: RemoteConversation) => conversation.id);
                             }
                         }
@@ -237,5 +264,54 @@ export struct RemoteSidebarSection {
         }
         .width('100%')
         .layoutWeight(1);
+    }
+
+    // 会话行：样式对齐本地会话列表（行高50、正文字号、激活/按压态、时间或生成中标记）
+    @Builder
+    RemoteConversationRow(group: RemoteComputerGroup, conversation: RemoteConversation) {
+        Row({ space: Space.sm }) {
+            Text(conversation.title)
+                .fontSize(FontSize.body)
+                .fontColor(this.activeConversationId === conversation.id
+                    ? $r('app.color.text_brand') : $r('app.color.text_primary'))
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .layoutWeight(1);
+
+            if (this.isRunning(group, conversation.id)) {
+                Text('生成中')
+                    .fontSize(FontSize.caption)
+                    .lineHeight(LineHeight.caption)
+                    .fontColor($r('app.color.text_brand'));
+            } else if (this.timeLabel(conversation.updatedAt).length > 0) {
+                Text(this.timeLabel(conversation.updatedAt))
+                    .fontSize(FontSize.caption)
+                    .lineHeight(LineHeight.caption)
+                    .fontColor($r('app.color.text_tertiary'));
+            }
+        }
+        .width('100%')
+        .height(50)
+        .padding({ left: Space.xl, right: Space.md })
+        .borderRadius(Radius.md)
+        .backgroundColor(this.activeConversationId === conversation.id
+            ? $r('app.color.brand_soft')
+            : this.pressedConversationKey === this.conversationKey(group.device.id, conversation.id)
+                ? $r('app.color.bg_pressed')
+                : Color.Transparent)
+        .animation({ duration: Motion.durationPress, curve: Motion.press })
+        .onTouch((event: TouchEvent) => {
+            const key: string = this.conversationKey(group.device.id, conversation.id);
+
+            if (event.type === TouchType.Down) {
+                this.pressedConversationKey = key;
+            }
+
+            if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                this.pressedConversationKey = '';
+            }
+        })
+        .onClick(() => this.onOpenChat(group.device.id,
+            conversation.id, conversation.title, conversation.project));
     }
 }

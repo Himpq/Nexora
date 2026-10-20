@@ -15,6 +15,7 @@
 import { useMailStore } from '@/stores/mail'
 import { useModelStore } from '@/stores/model'
 import { useNotificationStore } from '@/stores/notification'
+import { useConversationStore } from '@/stores/conversation'
 
 /** 重连基础间隔(ms),按失败次数指数退避 */
 const RECONNECT_BASE_MS = 2000
@@ -232,6 +233,15 @@ class BrowserSyncService {
             return
         }
 
+        if (type === 'conversation_changed') {
+            // 会话列表没有推送通道时，其他窗口/云端 Web 新建的会话要等用户手动
+            // 刷新才出现。服务端在创建/删除/改标题后广播本事件，这里重拉列表。
+            // 列表渲染自带签名去重，内容没变时不会重建 DOM。
+            void useConversationStore().loadConversations()
+
+            return
+        }
+
         if (type === 'mail_changed') {
             // 新邮件/邮件状态变更:刷新未读徽标并静默同步已加载的列表
             useMailStore().handleRemoteChange()
@@ -253,6 +263,16 @@ class BrowserSyncService {
 
         if (type === 'notification_removed') {
             useNotificationStore().applyRemoved(payload)
+
+            return
+        }
+
+        if (type === 'remote_task_changed') {
+            // 电脑端任务开始/结束：远程面板据此同步活动任务，替代 5 秒轮询。
+            // 只有当前正打开远程视图时才处理，避免后台页面做无谓的 RPC。
+            void import('@/stores/remote').then(({ remoteStore }) => {
+                remoteStore.handleTaskLifecycleEvent(payload)
+            })
 
             return
         }

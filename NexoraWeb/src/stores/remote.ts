@@ -43,10 +43,17 @@ import {
     remoteHistoryToMessages,
     type RemoteTaskNotice,
 } from '@/stream/remoteSegments'
+import { applySharedQueueState, type SharedQueueState } from '@/stream/queueState'
 import { showToast } from '@/stores/notify'
 
-/** 设备在线状态轮询间隔(ms)：电脑端掉线/上线只能靠轮询发现。 */
-const DEVICE_POLL_MS = 5000
+/**
+ * 设备在线状态轮询间隔(ms)：电脑端掉线/上线只能靠轮询发现。
+ *
+ * 任务活动不再依赖它——电脑端任务开始/结束会经设备 WS 推 remote_task_changed
+ * 事件（见 handleTaskLifecycleEvent）。这里只兜底设备在线状态与漏掉的事件，
+ * 因此间隔从 5 秒放宽到 60 秒。
+ */
+const DEVICE_POLL_MS = 60000
 
 /**
  * 单个会话的运行时状态。
@@ -100,6 +107,8 @@ class RemoteStore {
     private started = false
     private historyLoads = new Map<string, Promise<void>>()
     private syncingTaskDevices = new Set<string>()
+    /** 同步进行中又收到任务事件时记下，本轮结束后补跑一次。 */
+    private pendingTaskSync = new Set<string>()
     /** 终态收尾的 watch 不能放进响应式对象，按会话 id 单独存。 */
     private terminalWatchers = new Map<string, WatchStopHandle>()
 
@@ -258,6 +267,9 @@ class RemoteStore {
             // loadModels 内部只在用户没手动选过时才覆盖选中项。
             await Promise.all([this.loadProjects(), this.loadModels()])
 
+            // 活动任务不再每轮拉取：电脑端任务开始/结束会推 remote_task_changed
+            // （handleTaskLifecycleEvent）。这里只在兜底轮询时补一次，防止事件丢失
+            // 导致侧栏一直转圈。
             if (selectedDeviceId === this.deviceId) {
                 await this.syncActiveTasks(selectedDeviceId)
             }
@@ -446,7 +458,15 @@ class RemoteStore {
 
     /** 查电脑当前任务并接管未完成会话，事件从游标零开始幂等重放。 */
     private async syncActiveTasks(deviceId: string): Promise<void> {
-        if (!deviceId || deviceId !== this.deviceId || this.syncingTaskDevices.has(deviceId)) {
+        if (!deviceId || deviceId !== this.deviceId) {
+            return
+        }
+
+        // 正在同步时又来一次（如 started 紧跟 finished）：标记待补跑，
+        // 本轮结束后再跑一次，否则后一个事件的状态会被前一轮的结果覆盖。
+        if (this.syncingTaskDevices.has(deviceId)) {
+            this.pendingTaskSync.add(deviceId)
+
             return
         }
 
@@ -544,7 +564,37 @@ class RemoteStore {
             }
         } finally {
             this.syncingTaskDevices.delete(deviceId)
+
+            // 同步期间积压了事件：补跑一次，保证最终状态与电脑一致。
+            if (this.pendingTaskSync.delete(deviceId) && deviceId === this.deviceId) {
+                void this.syncActiveTasks(deviceId).catch(() => {})
+            }
         }
+    }
+
+    /**
+     * 电脑端任务开始/结束的事件入口（经云端 /ws/browser 推来）。
+     *
+     * 这是替代 5 秒轮询的主路径：任务状态一变就同步一次活动任务，
+     * 平时不再发任何 RPC。事件只带会话/流 id，具体接管仍由 syncActiveTasks
+     * 拉一次权威状态完成——事件是「该去看一眼了」的信号，不是事实本身。
+     */
+    handleTaskLifecycleEvent(payload: Record<string, unknown>): void {
+        const event = String(payload.event || '').trim()
+
+        if (event !== 'task_started' && event !== 'task_finished') {
+            return
+        }
+
+        // 侧栏没挂载（用户没进远程视图）时不处理：没有会话要在意，
+        // 等用户进去时 selectDevice 会自己同步一次。
+        if (!this.started || !this.deviceId) {
+            return
+        }
+
+        void this.syncActiveTasks(this.deviceId).catch(() => {
+            // 同步失败不打扰用户：兜底轮询与下次事件都会重试。
+        })
     }
 
     // ---------- 选择 ----------
@@ -875,38 +925,63 @@ class RemoteStore {
         }
 
         /**
-         * 当前轮次的助手气泡。
+         * 当前队列轮次助手消息的索引。
          *
-         * 接管已在跑的任务时 restore() 会把游标归零、从头重放整条流，
-         * 历史轮次的 content / tool 事件也会被再读一次。若一律写到「最后一条
-         * assistant」，重放的历史内容会灌进本轮气泡。这里用轮次指针隔离：
-         * queue_turn_start 指向本轮，queue_turn_end 后置空，置空期间的普通
-         * 事件属于已落盘的历史轮次，直接丢弃。
+         * 队列开始帧会把新对象插入响应式消息数组；保留该原始对象再修改内容，
+         * Vue 不会收到后续变化。每个事件按索引从当前数组取回代理对象，也能
+         * 在历史加载替换数组后继续更新正确的消息。
          */
-        let turnTarget: ChatMessage | null = null
+        let turnTargetIndex: number | null = null
+
+        const currentTurnTarget = (): ChatMessage | null => {
+            if (turnTargetIndex === null) {
+                return null
+            }
+
+            const messageIndex = session.messages.findIndex(message =>
+                message.role === 'assistant' && Number(message.index) === turnTargetIndex
+            )
+
+            return messageIndex < 0 ? null : session.messages[messageIndex] || null
+        }
 
         session.stream = markRaw(new RemoteTaskStream(this.deviceId, {
             onEvent: (event) => {
+                // 队列状态：电脑端每次入队/编辑/删除/弹出下一项都会推 queue_state。
+                // 它不属于任何一条消息，必须直接写进共享队列缓存——否则云端 Remote
+                // 面板的队列只在切会话时拉过一次快照，电脑端 pop 了它也不知道，
+                // 表现为「队列消息执行完了还挂在列表里」。
+                if (event.type === 'queue_state') {
+                    applySharedQueueState({
+                        ...(event as unknown as SharedQueueState),
+                        device_id: this.deviceId,
+                    })
+
+                    return
+                }
+
                 // 队列轮次切分：电脑端多轮共用一条流，每轮以 queue_turn_start 开头。
                 // 这里必须自己重建用户气泡与助手占位——本地通道有 pendingStreams
                 // 缓冲，云端 Remote 主区没有，不处理就会「队列消息在云端看不见」。
                 if (event.type === 'queue_turn_start') {
-                    turnTarget = beginRemoteQueuedTurn(session.messages, event, this.takeNextMessageIndex(session))
+                    const target = beginRemoteQueuedTurn(session.messages, event, this.takeNextMessageIndex(session))
+                    turnTargetIndex = Number(target.index)
 
                     return
                 }
 
                 if (event.type === 'queue_turn_end') {
-                    applyRemoteFinalMessage(turnTarget, event.final_message)
-                    turnTarget = null
+                    applyRemoteFinalMessage(currentTurnTarget(), event.final_message)
+                    turnTargetIndex = null
 
                     return
                 }
 
                 // 未收到 queue_turn_start 的普通事件（单轮任务、或本轮首帧先于
                 // 切分帧到达）：回退到「最后一条 assistant」。
-                const target = turnTarget
-                    || [...session.messages].reverse().find(message => message.role === 'assistant')
+                const target = turnTargetIndex === null
+                    ? [...session.messages].reverse().find(message => message.role === 'assistant')
+                    : currentTurnTarget()
 
                 if (!target) {
                     return
@@ -921,16 +996,17 @@ class RemoteStore {
                     : meta?.stage_detail || ''
 
                 if (isTerminalRemoteTaskState(next)) {
-                    const activeAssistant = turnTarget
-                        || [...session.messages].reverse().find(message =>
+                    const activeAssistant = turnTargetIndex === null
+                        ? [...session.messages].reverse().find(message =>
                             message.role === 'assistant' && message.status === 'streaming'
                         )
+                        : currentTurnTarget() || undefined
 
                     if (activeAssistant?.status === 'streaming') {
                         finalizeStreamingMessage(activeAssistant)
                     }
 
-                    turnTarget = null
+                    turnTargetIndex = null
                 }
 
                 if (meta?.conversation_id) {

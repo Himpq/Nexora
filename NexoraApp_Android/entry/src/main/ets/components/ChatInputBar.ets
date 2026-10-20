@@ -1,40 +1,22 @@
 // ChatInputBar.ets - 对话输入栏
-// 首页与对话页共用：多行自适应输入框 + 模型/能力开关 + 发送/停止按钮
+// 首页与对话页共用：多行自适应输入框 + 能力开关 + 发送/停止按钮
 // 发送与停止是同一个位置的状态切换，避免生成中按钮跳动
 // 聚焦时输入栏边框提亮，失焦时恢复
 
-import { hilog } from '@kit.PerformanceAnalysisKit';
 import { FontSize, Motion, PressScale, Radius, Size, Space } from '../common/DesignToken';
-
-const DOMAIN: number = 0x0001;
-const TAG: string = 'ChatInputBar';
 
 @Component
 export struct ChatInputBar {
     @Link draft: string;
-    // 模型展示 chip：通过 @StorageProp 从 AppStorage 获取模型名。
-    // AppStorage 是应用级存储总线，不依赖组件树层级，比 @Provide/@Consume 更可靠
-    @StorageProp('inputModelLabel') @Watch('onModelLabelChanged') inputModelLabel: string = '选择模型';
     // 沉浸式布局下页面一路铺到物理屏底，输入栏必须自己让开手势区
     @StorageProp('insetBottom') private insetBottom: number = 0;
     @Prop streaming: boolean = false;
     @Prop placeholder: string = '给 Nexora 发送消息…';
     onSend: () => void = () => {};
     onStop: () => void = () => {};
-    onPickModel: () => void = () => {};
 
     @State private focused: boolean = false;
-    @State private modelPressed: boolean = false;
     @State private sendPressed: boolean = false;
-
-    aboutToAppear(): void {
-        hilog.info(DOMAIN, TAG, '[init] inputModelLabel=%{public}s', this.inputModelLabel);
-    }
-
-    // @StorageProp 变更回调：确认 AppStorage 写入是否被 @StorageProp 检测到
-    onModelLabelChanged(): void {
-        hilog.info(DOMAIN, TAG, '[watch] inputModelLabel changed to: %{public}s', this.inputModelLabel);
-    }
 
     build() {
         Column({ space: Space.sm }) {
@@ -56,37 +38,6 @@ export struct ChatInputBar {
                 });
 
             Row({ space: Space.sm }) {
-                // 模型 chip：直接内联而非走 @Builder，确保 @StorageProp 变更被 build() 依赖收集追踪
-                Row({ space: Space.xs }) {
-                    Image($r('app.media.ic_spark'))
-                        .width(14)
-                        .height(14)
-                        .fillColor($r('app.color.icon_secondary'));
-
-                    Text(this.inputModelLabel)
-                        .fontSize(FontSize.caption)
-                        .fontColor($r('app.color.text_secondary'))
-                        .maxLines(1)
-                        .textOverflow({ overflow: TextOverflow.Ellipsis });
-                }
-                .constraintSize({ maxWidth: '68%' })
-                .padding({ left: Space.md, right: Space.md, top: Space.xs, bottom: Space.xs })
-                .borderRadius(Radius.full)
-                .backgroundColor(this.modelPressed ? $r('app.color.bg_pressed') : $r('app.color.bg_sunken'))
-                .animation({ duration: Motion.durationPress, curve: Motion.press })
-                .onTouch((event: TouchEvent) => {
-                    if (event.type === TouchType.Down) {
-                        this.modelPressed = true;
-                    }
-
-                    if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-                        this.modelPressed = false;
-                    }
-                })
-                .onClick(() => {
-                    this.onPickModel();
-                });
-
                 Blank();
 
                 this.SendButton();
@@ -159,29 +110,5 @@ export struct ChatInputBar {
 
             this.onSend();
         });
-    }
-
-    // 能力开关 chip：激活态用品牌浅底 + 品牌文字；maxWidth 以百分比约束整颗 chip，
-    // 文本超长在 chip 内省略，避免把同行其它固定元素（发送按钮）挤出容器
-    @Builder
-    ToggleChip(label: string, icon: ResourceStr, active: boolean, maxWidth: string, action: () => void) {
-        Row({ space: Space.xs }) {
-            Image(icon)
-                .width(14)
-                .height(14)
-                .fillColor(active ? $r('app.color.text_brand') : $r('app.color.icon_secondary'));
-
-            Text(label)
-                .fontSize(FontSize.caption)
-                .fontColor(active ? $r('app.color.text_brand') : $r('app.color.text_secondary'))
-                .maxLines(1)
-                .textOverflow({ overflow: TextOverflow.Ellipsis });
-        }
-        .constraintSize({ maxWidth: maxWidth })
-        .padding({ left: Space.md, right: Space.md, top: Space.xs, bottom: Space.xs })
-        .borderRadius(Radius.full)
-        .backgroundColor(active ? $r('app.color.brand_soft') : $r('app.color.bg_sunken'))
-        .animation({ duration: Motion.durationFast, curve: Motion.easeOut })
-        .onClick(action);
     }
 }

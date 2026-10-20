@@ -13,6 +13,7 @@ export interface RemoteConversation {
     title: string;
     project: Object | null;
     projectPath: string;
+    updatedAt: number;
 }
 
 export interface RemoteTaskSession {
@@ -23,6 +24,7 @@ export interface RemoteTaskSession {
     historyUserCount: number | null;
     message: string;
     isRegenerate: boolean;
+    skipUserMessage: boolean;
 }
 
 export interface RemoteTaskBody {
@@ -86,7 +88,7 @@ export class NexoraCodeApi {
             const row: Record<string, Object> = raw as Record<string, Object>;
             const metadata: Record<string, Object> | null = Json.object(row, 'metadata');
             const project: Record<string, Object> | null = metadata === null ? null : Json.object(metadata, 'nexoracode_project');
-            return { id: Json.string(row, 'conversation_id'), title: Json.string(row, 'title'), project: project, projectPath: project === null ? '' : Json.string(project, 'path') };
+            return { id: Json.string(row, 'conversation_id'), title: Json.string(row, 'title'), project: project, projectPath: project === null ? '' : Json.string(project, 'path'), updatedAt: Json.number(row, 'updated_at') };
         });
     }
 
@@ -102,7 +104,8 @@ export class NexoraCodeApi {
                 lastSequence: Json.number(row, 'last_seq'),
                 historyUserCount: typeof userCount === 'number' ? userCount : null,
                 message: Json.string(row, 'message'),
-                isRegenerate: Json.boolean(row, 'is_regenerate')
+                isRegenerate: Json.boolean(row, 'is_regenerate'),
+                skipUserMessage: Json.boolean(row, 'skip_user_message')
             };
         });
     }

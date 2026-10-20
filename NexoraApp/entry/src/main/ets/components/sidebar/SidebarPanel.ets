@@ -133,6 +133,7 @@ export struct SidebarPanel {
             } else {
                 RemoteSidebarSection({
                     activeConversationId: this.activeConversationId,
+                    refreshSeq: this.app.remoteRefreshSeq,
                     onOpenChat: (deviceId: string, conversationId: string, title: string, project: Object | null): void => {
                         this.onOpenRemoteChat(deviceId, conversationId, title, project);
                     }
