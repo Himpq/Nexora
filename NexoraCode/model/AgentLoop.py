@@ -32,7 +32,12 @@ from .ToolPermissionPolicy import (
     get_permission_settings,
     parse_tool_arguments,
 )
-from .turn_injection import plan_injection
+from .turn_injection import (
+    INJECTION_VERSION,
+    build_injection_messages,
+    build_permission_mode_message,
+    plan_injection,
+)
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -332,23 +337,40 @@ class AgentLoop:
 
         effective_system = str(system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT
 
-        if get_permission_settings(conversation_id)["mode"] == "auto":
-            effective_system += (
-                "\n\n自动审批协作要求：调用写入、命令、网络或进程变更工具前，先在普通回复中用一句简短的话说明"
-                "准备执行什么操作，以及它如何对应当前用户请求；不要输出内部推理。"
-            )
-
-        # tail 注入块（项目约定 / 自定义提示词）：按基线比对决定是否注入。
-        # 首轮全量注入并建立基线；后续只在内容变化时注入 diff，稳定轮次不注入，
-        # 这样 [head + 历史] 前缀始终可缓存。
-        # 另外准备一份忽略基线的全量块：上下文被压缩重建时历史被摘要替换，
-        # 此前的注入块已从窗口消失，必须用全量块重新注入一次。
-        # 基线不在这里落盘：首轮请求可能失败，失败前写基线会让重发不再注入，
-        # 因此推迟到首轮 provider 成功产出后再落盘。
-        volatile_blocks, volatile_full_blocks, injection_baseline, injection_diag, injection_full_diag = self._resolve_injection_blocks(
+        # Modified Injection（append-only）：项目约定 / 自定义提示词按基线比对，
+        # 首轮全量、之后只在变化时追加 diff；产生的块直接写进会话历史（system 消息），
+        # 此后每轮随历史原样重发，位置不再变化 → 请求序列是前缀扩展，缓存可命中。
+        # 另备一份忽略基线的全量块：上下文压缩重建后历史被摘要替换，注入块随之消失，
+        # 由 prepare 在提交摘要时把全量块插回保留历史之前。
+        injection_blocks, full_injection_blocks, injection_baseline, injection_diag, injection_full_diag = self._resolve_injection_blocks(
             conversation_id, injection_sources, len(effective_system)
         )
-        injection_baseline_saved = False
+        injection_messages = build_injection_messages(injection_blocks, (injection_diag or {}).get("blocks") or [])
+        full_injection_messages = build_injection_messages(full_injection_blocks, (injection_full_diag or {}).get("blocks") or [])
+
+        # 审批模式变化同样走 append-only：head 只保留不随模式变化的规则。
+        permission_message, permission_mode = self._resolve_permission_mode_message(conversation_id)
+
+        if permission_message is not None:
+            injection_messages.append(permission_message)
+
+        if permission_mode:
+            # 压缩重建后旧的模式块会被摘要替换：全量重建里必须带上当前模式，
+            # 否则模型可能按摘要里过时的模式描述行事。
+            full_injection_messages.append(build_permission_mode_message(permission_mode))
+
+        if injection_messages:
+            # 插在本轮 user 消息之前（形成 ... [d][user]）；skip_user_message 的续跑
+            # 没有新 user，直接追加到历史末尾。基线与模式标记同一次写盘，避免重复注入。
+            current_history = (self.store.get(conversation_id) or {}).get("messages") or []
+            insert_index = len(current_history) if skip_user_message else max(0, len(current_history) - 1)
+            self.store.insert_injections(
+                conversation_id,
+                insert_index,
+                injection_messages,
+                baseline=injection_baseline,
+                permission_mode=permission_mode,
+            )
 
         if injection_diag:
             yield {
@@ -473,8 +495,8 @@ class AgentLoop:
                 break
 
             tools = self.executor.list_tools_llm_format()
-            round_volatile_instructions = list(volatile_blocks or [])
-            round_volatile_full_instructions = list(volatile_full_blocks or [])
+            # 逐轮临时提示（空响应重试）不进历史，只拼在本次请求末尾。
+            round_volatile_instructions: list[str] = []
 
             if retry_after_empty_response:
                 # 首轮撞上限时输入与上次完全相同，若不改变输入，模型会重复同样的思考
@@ -501,13 +523,13 @@ class AgentLoop:
                     force=force_context_compression,
                     cancel_checker=cancel_checker,
                     response_trace_id=response_trace_id,
-                    # 只有本次请求的首轮可以压缩：后续轮次一旦压缩，
+                    # 只有本次请求的第一次模型调用可以压缩：后续轮次一旦压缩，
                     # 摘要坑位改写会让本请求已缓存的整段前缀立即失效。
-                    allow_compression=round_index <= 1,
+                    allow_compression=round_index == 0,
                     volatile_instructions=round_volatile_instructions,
                     # 压缩重建路径改用全量块：历史被摘要替换后，此前的注入块
                     # 已从窗口消失，必须重新全量注入一次。
-                    volatile_full_instructions=round_volatile_full_instructions,
+                    rebuild_injections=full_injection_messages,
                 )
                 messages = None
 
@@ -675,19 +697,6 @@ class AgentLoop:
                 # 累计本轮净生成时长（含首 token 等待，不含工具执行/审批），
                 # 供 badge 速率以生成口径为分母，而非整次请求墙钟时间。
                 badge_timing["providerMs"] += max(0, int((time.monotonic() - provider_started) * 1000))
-
-                # 首轮 provider 成功产出（收到过至少一个事件）后才落盘注入基线：
-                # 若请求彻底失败（连接错误、鉴权失败、无任何事件），基线不落盘，
-                # 用户重发时仍按首轮全量注入，不会因「基线已存在」而丢失项目约定。
-                if provider_first_event_logged and not injection_baseline_saved and injection_baseline is not None:
-                    try:
-                        self.store.save_injection_baseline(conversation_id, injection_baseline)
-                        injection_baseline_saved = True
-                    except Exception:
-                        _LOGGER.exception(
-                            "[LocalAgent] injection_baseline_save_failed conversation=%s",
-                            conversation_id,
-                        )
 
             content_text = "".join(assistant_parts)
             reasoning_text += "".join(assistant_reasoning_parts)
@@ -1203,7 +1212,7 @@ class AgentLoop:
         - request_debug:               窗口上限与首轮载荷字符（前端脏数据保护）
         - reasoning_content:           推理过程全文（前端历史渲染的 thinking 折叠块）
         - response_trace_id/round_index: 请求分组与轮次序号，用于把用量对回具体哪次请求的哪一轮
-        - context_injection:           head 字符数与 tail volatile 注入块诊断（重进对话后仍可见）
+        - context_injection:           head 字符数与 Modified Injection 落盘消息诊断（重进对话后仍可见）
         - context_compression:         本轮首轮压缩终态（done/skipped/trimmed），
                                        重进对话后压缩卡片据此恢复，避免 token 骤降无任何解释
         """
@@ -1297,7 +1306,8 @@ class AgentLoop:
             return None
 
         if total <= 0:
-            total = effective + output
+            # 合计口径 = 原始输入 + 输出，不因缓存命中扣减。
+            total = raw + output
 
         return {
             "type": "token_usage",
@@ -1317,30 +1327,27 @@ class AgentLoop:
         return self.context_manager.build_messages(conversation, system_prompt, volatile_instructions)
 
     def _resolve_injection_blocks(self, conversation_id: str, injection_sources: Any, head_chars: int = 0) -> tuple[list[str], list[str], dict | None, dict | None, dict | None]:
-        """按基线比对解析本轮 tail 注入块，返回 diff 与 full 两套结果。
+        """按基线比对解析本轮 Modified Injection 块，返回 diff 与 full 两套结果。
 
-        首轮（无基线）全量注入并建立基线；后续只在内容变化时注入 diff；
-        无变化返回空列表——稳定轮次不注入任何 tail 块，[head + 历史] 前缀可缓存。
+        首轮（无基线）全量；后续只在内容变化时生成 diff；无变化返回空列表。
+        生成的块由调用方追加进会话历史（append-only），不是本次请求的临时尾部。
 
         返回 (diff_blocks, full_blocks, new_baseline, diff_diag, full_diag)：
-        - diff_blocks: 按基线比对的结果，常规轮次注入。
+        - diff_blocks: 按基线比对的结果，常规轮次落盘。
         - full_blocks: 忽略基线的全量结果，供「上下文压缩重建」轮次使用——
           历史被摘要替换后，此前的注入块已从窗口消失，必须重新全量注入一次。
-        - new_baseline: 采样后的最新基线，由调用方在请求成功后再落盘。
+        - new_baseline: 采样后的最新基线，与注入消息同一次写盘。
         - diff_diag / full_diag: 对应块的诊断信息（前端展示用）。
-
-        基线不在这里落盘：首轮请求可能失败（provider 报错），若失败前就写基线，
-        用户重发时会因「基线无变化」而不再注入。落盘时机交给调用方在请求成功后决定。
         """
 
         sources = injection_sources if isinstance(injection_sources, dict) else {}
+        conversation = self.store.get(conversation_id) or {}
+        baseline = self._injection_baseline(conversation)
 
-        if not any(str(value or "").strip() for value in sources.values()):
-            # 两个通道都为空：无需比对，也无需落盘基线。
+        if not any(str(value or "").strip() for value in sources.values()) and not baseline:
+            # 两个通道都为空且没有历史基线：无需比对，也无需落盘基线。
             return [], [], None, None, None
 
-        conversation = self.store.get(conversation_id) or {}
-        baseline = conversation.get("injection_baseline")
         diff_blocks, new_baseline, diagnostics = plan_injection(sources, baseline)
         full_blocks, _, full_diagnostics = plan_injection(sources, baseline, force_full=True)
 
@@ -1355,6 +1362,32 @@ class AgentLoop:
             full_diag = {"head_chars": max(0, int(head_chars or 0)), "blocks": full_diagnostics}
 
         return diff_blocks, full_blocks, new_baseline, diff_diag, full_diag
+
+    @staticmethod
+    def _injection_baseline(conversation: dict) -> dict | None:
+        """读取注入基线；旧会话（从未落盘注入消息）返回 None 强制全量重建一次。"""
+
+        if int(conversation.get("injection_version") or 0) < INJECTION_VERSION:
+            return None
+
+        baseline = conversation.get("injection_baseline")
+        return baseline if isinstance(baseline, dict) and baseline else None
+
+    def _resolve_permission_mode_message(self, conversation_id: str) -> tuple[dict | None, str]:
+        """审批模式变化时生成 append-only 注入消息，返回 (message, mode)。
+
+        初始 confirm 不需要注入（head 已描述默认行为）；auto 首次开启、以及
+        auto 与其它模式之间切换时各追加一条，旧块保留在历史里。
+        """
+
+        conversation = self.store.get(conversation_id) or {}
+        mode = str(get_permission_settings(conversation_id).get("mode") or "").strip().lower()
+        previous = str(conversation.get("injection_permission_mode") or "").strip().lower()
+
+        if mode == previous or (not previous and mode != "auto"):
+            return None, mode
+
+        return build_permission_mode_message(mode), mode
 
     def _execute_tool(
         self,

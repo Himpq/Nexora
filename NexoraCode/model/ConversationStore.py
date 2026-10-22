@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.config import get_app_root
+from .turn_injection import INJECTION_VERSION
 
 
 # 多个本地/远程请求创建不同 Store 实例，共享锁才能避免文件读改写互相覆盖。
@@ -404,13 +405,23 @@ class ConversationStore:
         path = self._conversation_path(str(conversation.get("conversation_id") or ""))
         write_json_atomic(path, conversation)
 
-    def save_context(self, conversation_id: str, record: dict, expected_prefix: list) -> None:
-        """摘要只移动请求边界，保留所有消息；历史被改写时拒绝提交旧摘要。"""
+    def save_context(self, conversation_id: str, record: dict, expected_prefix: list,
+                     injections: list[dict] | None = None) -> None:
+        """摘要只移动请求边界，保留所有消息；历史被改写时拒绝提交旧摘要。
+
+        injections 为压缩重建后的全量注入消息：插在摘要边界之前（即保留历史的
+        第一条之前），与摘要一起原子落盘，避免「摘要生效但注入丢失」的中间态。
+        """
         with self._lock:
             conversation = self.get(conversation_id)
 
             if conversation is None or conversation.get("messages", [])[:len(expected_prefix)] != expected_prefix:
                 raise ValueError("摘要生成期间历史已变化，未保存旧摘要")
+
+            if injections:
+                history = conversation.setdefault("messages", [])
+                cut = max(0, min(int(record["history_cut_index"]), len(history)))
+                history[cut:cut] = [dict(message) for message in injections]
 
             conversation["context_state"] = {
                 "summary": record["summary"],
@@ -419,20 +430,38 @@ class ConversationStore:
             conversation.setdefault("context_compressions", []).append(record)
             self._save_conversation(conversation)
 
-    def save_injection_baseline(self, conversation_id: str, baseline: dict) -> None:
-        """落盘 tail 注入块的基线快照，供下一轮比对。
+    def insert_injections(self, conversation_id: str, index: int, messages: list[dict],
+                          baseline: dict | None = None, permission_mode: str | None = None) -> bool:
+        """把注入消息插入历史指定位置，并在同一事务里推进注入基线。
 
-        基线跨请求持久化是「无变化不注入」的前提：只存内存的话，
-        每次新请求都拿不到上一轮的基线，会被当成首轮全量注入。
+        index 是新 user 消息的下标：注入块插在它之前，形成 [d][user]。
+        落盘后每轮请求都从历史里带上它，位置不再变化，请求序列保持前缀扩展。
+        permission_mode 非空时同步记录当前审批模式，避免同一模式重复注入。
         """
+
+        if not messages:
+            return False
+
         with self._lock:
             conversation = self.get(conversation_id)
 
             if conversation is None:
                 raise ValueError("本地会话不存在")
 
-            conversation["injection_baseline"] = dict(baseline or {})
+            history = conversation.setdefault("messages", [])
+            position = max(0, min(int(index), len(history)))
+            history[position:position] = [dict(message) for message in messages]
+
+            if baseline is not None:
+                conversation["injection_baseline"] = dict(baseline)
+                conversation["injection_version"] = INJECTION_VERSION
+
+            if permission_mode is not None:
+                conversation["injection_permission_mode"] = str(permission_mode or "").strip().lower()
+
+            conversation["updated_at"] = time.time()
             self._save_conversation(conversation)
+            return True
 
     def get_settings(self, conversation_id: str) -> dict:
         """读取会话级设置（模型 / 工具权限）。

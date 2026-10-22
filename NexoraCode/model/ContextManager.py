@@ -73,11 +73,15 @@ class ContextManager:
     def message_payload(message: dict) -> dict:
         role = str(message.get("role") or "")
 
-        if role not in {"user", "assistant", "tool"}:
+        if role not in {"system", "user", "assistant", "tool"}:
             raise ValueError(f"不支持的历史消息角色：{role}")
 
         content = message.get("content")
         item = {"role": role, "content": content if isinstance(content, (str, list)) else str(content or "")}
+
+        # 注入块以 system 消息持久化：只取正文，metadata 里的诊断信息不进请求。
+        if role == "system":
+            return item
 
         if role == "tool":
             item["tool_call_id"] = str(message.get("tool_call_id") or "")
@@ -191,11 +195,12 @@ class ContextManager:
             raise ValueError("工具调用缺少结果，不能压缩或发送")
 
     def build_messages(self, conversation: dict, system_prompt: str, volatile_instructions: list[str] | None = None) -> list[dict]:
-        """组装请求消息：head（system）恒定，volatile 块走 tail。
+        """组装请求消息：[head, 摘要?, 历史..., 临时块...]。
 
-        结构固定为 [head, 摘要?, 历史..., volatile...]，volatile 块插在历史之后。
-        head 不含任何「用户可改」的内容，保证 prefix cache 稳定命中；
-        volatile 由调用方按基线比对决定是否注入（无变更时为空列表）。
+        head 恒定；项目约定 / 自定义提示词以 system 消息持久化在历史里（由
+        AgentLoop 在轮次开头追加），随历史原样重发，位置不再变化，保证请求
+        序列是前缀扩展；这里只额外追加「逐轮临时」的注入块（如空响应重试提示），
+        它们不进历史，也不影响已缓存前缀。
         """
         state = conversation.get("context_state", {})
         cut = int(state.get("history_cut_index", 0))
@@ -219,7 +224,7 @@ class ContextManager:
         # 这类历史不是用户错误，补齐即恢复协议，不该让会话永久卡死。
         messages = self.repair_tools(messages)
 
-        # tail volatile 注入块：紧跟历史之后。工具配对校验必须在插入前完成，
+        # 临时注入块：紧跟历史之后。工具配对校验必须在插入前完成，
         # 否则插在 assistant.tool_calls 与 tool 结果之间会破坏配对关系。
         self.validate_tools(messages)
 
@@ -353,18 +358,18 @@ class ContextManager:
 
     def prepare(self, conversation_id, system_prompt, tools, *, force=False, cancel_checker=None,
                 response_trace_id="", allow_compression=True, volatile_instructions=None,
-                volatile_full_instructions=None):
+                rebuild_injections=None):
         """必要时分批总结历史；当前 user 轮次及其工具结果始终保持原样。
 
         allow_compression=False 表示本次请求已经发出过前缀：摘要坑位一改写，
         已缓存的整段前缀立即失效，所以非首轮不再压缩，只有真的装不下时才兜底压缩。
 
-        volatile_instructions 为 tail 注入块（项目约定 / 自定义提示词），
-        由调用方按基线比对决定是否注入；无变更时为空列表。
+        volatile_instructions 为逐轮临时注入块（如空响应重试提示），不进历史。
 
-        volatile_full_instructions 为忽略基线的全量注入块。压缩重建上下文时，
-        历史被摘要替换、此前的注入块已从窗口消失，此时必须改用全量块重新注入一次，
-        否则模型在重建后的上下文里看不到项目约定。未提供时退回 volatile_instructions。
+        rebuild_injections 为压缩重建用的全量注入消息（role=system）。压缩后历史
+        被摘要替换、原有注入块随之消失，必须把全量块追加到保留历史之前，否则模型
+        在重建后的上下文里看不到项目约定。消息与摘要同事务落盘，且只在此次确实
+        发生压缩时使用。
         """
         conversation = self.store.get(conversation_id)
 
@@ -381,6 +386,7 @@ class ContextManager:
             )
 
         messages = self.build_messages(conversation, system_prompt, volatile_instructions)
+        original_messages = messages
         measured_estimate = self._measure_request_basis(conversation, messages, tools)
         state = conversation.get("context_state", {})
         threshold = min(int(window * 0.9), window - output)
@@ -611,10 +617,19 @@ class ContextManager:
             cursor = boundary
 
         updated = dict(conversation)
+        updated_messages = list(conversation.get("messages", []))
+        updated["messages"] = updated_messages
         updated["context_state"] = {"summary": summary, "history_cut_index": end}
-        # 压缩重建后历史被摘要替换，此前的注入块已从窗口消失：改用全量块重新注入一次。
-        rebuild_instructions = volatile_full_instructions if volatile_full_instructions is not None else volatile_instructions
-        messages = self.build_messages(updated, system_prompt, rebuild_instructions)
+
+        # 压缩重建后历史被摘要替换，此前的注入块已从窗口消失：把全量块插到保留
+        # 历史之前（即当前 user 之前），与摘要一起落盘，之后每轮随历史重发。
+        rebuild_messages = [dict(message) for message in (rebuild_injections or [])]
+
+        if rebuild_messages:
+            position = max(0, min(end, len(updated_messages)))
+            updated_messages[position:position] = rebuild_messages
+
+        messages = self.build_messages(updated, system_prompt, volatile_instructions)
         post_estimate = self._measure_request_basis(updated, messages, tools)
         trimmed = None
         output_reduced = False
@@ -637,8 +652,24 @@ class ContextManager:
 
                 post_estimate = self.estimate_tokens({"messages": trimmed, "tools": tools})
 
+        # 软阈值触发但压缩后没省下 token：这次压缩只会改写摘要坑位、让刚缓存的
+        # 整段前缀失效，收益为零。保留原请求，等历史继续增长后再压。
+        # 超过硬上限时不适用——那种情况必须压出空间才能发出请求。
+        if not force and measured_estimate < hard_limit and post_estimate >= measured_estimate:
+            print(f"[LocalContext] compression_no_gain conversation={conversation_id} "
+                  f"input_basis={measured_estimate} post_basis={post_estimate} cut={end}")
+            yield {
+                "type": "context_compression_status",
+                "status": "skipped",
+                "content": "压缩未能减少上下文，已保留当前请求",
+                "raw_input_tokens": measured_estimate,
+                "post_raw_input_tokens": post_estimate,
+                "context_window": window,
+            }
+            return original_messages
+
         record = {"summary": summary, "history_cut_index": end, "created_at": time.time(), "model_name": self.provider.config.model, "usage": usages}
-        self.store.save_context(conversation_id, record, history[:end])
+        self.store.save_context(conversation_id, record, history[:end], injections=rebuild_messages)
 
         if trimmed is not None:
             print(f"[LocalContext] post_compression_trimmed conversation={conversation_id} "

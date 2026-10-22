@@ -50,7 +50,7 @@ from .ToolPermissionPolicy import (
     save_permission_settings,
     take_pending_tool_action,
 )
-from .turn_injection import collapse_context_injection_steps, plan_injection
+from .turn_injection import collapse_context_injection_steps, is_injection_message, plan_injection
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -210,12 +210,13 @@ def _build_system_prompt(conversation: dict | None) -> str:
 
     # 注意：head 必须恒定。AGENTS.md 与自定义提示词都属于「用户随时可改」的内容，
     # 一旦拼进 head，用户改一次设置就会让已缓存的整段前缀失效。它们改由
-    # _collect_injection_sources 采样后，经基线比对决定是否作为 tail 注入。
+    # _collect_injection_sources 采样后，经基线比对生成 append-only 的 system 消息
+    # 写进历史（见 turn_injection / AgentLoop.stream_send）。
     return "\n".join(lines)
 
 
 def _collect_injection_sources(conversation: dict | None) -> dict:
-    """采样 tail 注入通道的当前文本：项目约定（AGENTS.md）与用户自定义提示词。
+    """采样注入通道的当前文本：项目约定（AGENTS.md）与用户自定义提示词。
 
     这里只负责「取当前值」，不做比对：基线读写需要落盘会话，统一交给
     AgentLoop 在处理请求时完成（见 turn_injection.plan_injection）。
@@ -247,8 +248,13 @@ def _normalize_history_messages(messages: list) -> list:
     归一化为前端渲染期望的 metadata.process_steps 格式：
     - assistant 消息生成 content / function_call / function_result 步骤
     - 过滤独立 role=tool 消息（工具结果已并入 assistant.process_steps）
+    - 过滤 role=system 的注入消息（Modified Injection 的落盘块，只给模型看，
+      界面上的注入卡片仍由 assistant.metadata.context_injection 渲染）
     """
-    rows = [row for row in (messages or []) if isinstance(row, dict)]
+    rows = [
+        row for row in (messages or [])
+        if isinstance(row, dict) and not is_injection_message(row)
+    ]
     out: list = []
     current_assistant_pos = -1
 
