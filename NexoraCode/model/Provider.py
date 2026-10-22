@@ -428,8 +428,42 @@ def _extract_uncached_tokens(u: dict) -> int:
     return 0
 
 
+def _extract_cache_creation_tokens(u: dict) -> int:
+    """提取缓存写入量（Anthropic cache_creation / 兼容网关 cache_write）。
+
+    写入量是新增计费，不是命中；单独取出来用于还原 Anthropic 的原始输入总量。
+    """
+    input_details = u.get("input_tokens_details") if isinstance(u.get("input_tokens_details"), dict) else {}
+
+    candidates = (
+        u.get("cache_creation_input_tokens"),
+        u.get("cache_write_input_tokens"),
+        input_details.get("cache_creation_input_tokens"),
+        input_details.get("cache_write_input_tokens"),
+    )
+
+    for value in candidates:
+        if value is None:
+            continue
+
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+
+        if number > 0:
+            return number
+
+    return 0
+
+
 def _extract_usage_io(raw_usage_obj) -> dict:
-    """从上游 usage 对象提取 input/output/cached/cost 统计（对齐云端口径）。"""
+    """从上游 usage 对象提取 input/output/cached/cost 统计（对齐云端口径）。
+
+    Anthropic 原生口径的 input_tokens 不含缓存读写：原始输入必须加上
+    cache_read + cache_creation，否则命中量会被 raw_input 钳到 0，命中率虚高。
+    OpenAI / DeepSeek 的 prompt_tokens 已包含缓存部分，保持原口径。
+    """
     u = raw_usage_obj if isinstance(raw_usage_obj, dict) else {}
 
     def _safe_int(value, default=0):
@@ -444,12 +478,30 @@ def _extract_usage_io(raw_usage_obj) -> dict:
         except (TypeError, ValueError):
             return default
 
-    raw_input = _safe_int(u.get("prompt_tokens", u.get("input_tokens", 0)))
+    has_prompt_tokens = "prompt_tokens" in u and u.get("prompt_tokens") is not None
+    has_input_tokens = "input_tokens" in u and u.get("input_tokens") is not None
+    prompt_tokens = _safe_int(u.get("prompt_tokens", 0))
+    input_tokens = _safe_int(u.get("input_tokens", 0))
+    raw_input = prompt_tokens if has_prompt_tokens else input_tokens
     output = _safe_int(u.get("completion_tokens", u.get("output_tokens", 0)))
     total = _safe_int(u.get("total_tokens", 0))
     cached, cached_source = _extract_cached_tokens(u)
     uncached = _extract_uncached_tokens(u)
+    cache_creation = _extract_cache_creation_tokens(u)
     reasoning = 0
+
+    # Anthropic 原生口径：input_tokens 只是未缓存部分，原始输入要把缓存读写加回来。
+    # input_tokens 可以为 0（整段命中缓存），只要字段存在就按该口径还原。
+    anthropic_style = (
+        not has_prompt_tokens
+        and has_input_tokens
+        and (cached > 0 or cache_creation > 0)
+    )
+
+    if anthropic_style:
+        raw_input = input_tokens + cached + cache_creation
+        uncached = input_tokens + cache_creation
+        cached_source = cached_source or "cache_read_input_tokens"
 
     completion_details = u.get("completion_tokens_details") if isinstance(u.get("completion_tokens_details"), dict) else {}
     output_details = u.get("output_tokens_details") if isinstance(u.get("output_tokens_details"), dict) else {}
@@ -469,6 +521,10 @@ def _extract_usage_io(raw_usage_obj) -> dict:
 
     # 缓存命中量不得超过上游原始输入，否则命中率为负。
     cached = min(cached, max(0, raw_input))
+
+    # 合计口径 = 原始输入 + 输出；部分厂商不返回 total_tokens，由此补齐。
+    if total <= 0:
+        total = raw_input + output
 
     return {
         "raw_input": max(0, raw_input),
