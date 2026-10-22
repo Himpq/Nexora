@@ -1,5 +1,7 @@
 """隔离测试：不加载用户配置、不联网、不读取现有会话。"""
+import contextlib
 import importlib.util
+import io
 import sys
 import tempfile
 import types
@@ -636,6 +638,42 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(io["cached_input"], 100)
         self.assertEqual(io["effective_input"], 0)
 
+    def test_anthropic_style_usage_adds_cache_tokens_to_raw_input(self):
+        """Anthropic 的 input_tokens 不含缓存读写：原始输入必须加回读写量。"""
+        extract = self.provider_module._extract_usage_io
+
+        read_only = extract({"input_tokens": 120, "output_tokens": 30,
+                             "cache_read_input_tokens": 5000})
+        self.assertEqual(read_only["raw_input"], 5120)
+        self.assertEqual(read_only["cached_input"], 5000)
+        self.assertEqual(read_only["effective_input"], 120)
+        self.assertEqual(read_only["total"], 5150)
+
+        with_write = extract({"input_tokens": 120, "output_tokens": 30,
+                              "cache_read_input_tokens": 4000,
+                              "cache_creation_input_tokens": 1000})
+        self.assertEqual(with_write["raw_input"], 5120)
+        self.assertEqual(with_write["cached_input"], 4000)
+        self.assertEqual(with_write["effective_input"], 1120)
+        self.assertEqual(with_write["uncached_input"], 1120)
+        self.assertEqual(with_write["total"], 5150)
+
+        # 整段命中时 input_tokens 为 0，仍要按缓存读还原原始输入。
+        fully_cached = extract({"input_tokens": 0, "output_tokens": 30,
+                                "cache_read_input_tokens": 5000})
+        self.assertEqual(fully_cached["raw_input"], 5000)
+        self.assertEqual(fully_cached["cached_input"], 5000)
+        self.assertEqual(fully_cached["effective_input"], 0)
+        self.assertEqual(fully_cached["total"], 5030)
+
+    def test_missing_total_tokens_falls_back_to_raw_input_plus_output(self):
+        """不返回 total_tokens 的厂商按「原始输入 + 输出」补齐合计。"""
+        io = self.provider_module._extract_usage_io(
+            {"prompt_tokens": 1000, "completion_tokens": 50,
+             "prompt_tokens_details": {"cached_tokens": 700}}
+        )
+        self.assertEqual(io["total"], 1050)
+
     def test_invalid_context_budget_error_names_the_model(self):
         self.provider.config.context_window = 0
         self.add("user", "hello")
@@ -888,6 +926,107 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(encoding_names, ["cl100k_base"])
         self.assertEqual(encoded_texts, [serialized])
         self.assertEqual(estimated, len(serialized))
+
+
+    def test_compression_inserts_rebuild_injection_before_retained_user(self):
+        """压缩重建：全量注入块落在保留历史之前，并随摘要一起落盘。"""
+        self.add("user", "第一问")
+        self.add("assistant", "第一答")
+        self.add("user", "第二问")
+        rebuild = {"role": "system", "content": "重建的项目约定",
+                   "metadata": {"injection": {"name": "project_conventions", "mode": "full"}}}
+        events, messages = self.consume(self.manager.prepare(
+            self.cid, "system", [], force=True, rebuild_injections=[rebuild]
+        ))
+        self.assertEqual(events[-1]["status"], "done")
+        self.assertEqual([message["role"] for message in messages], ["system", "user", "system", "user"])
+        self.assertEqual(messages[2]["content"], "重建的项目约定")
+        saved = self.store.get(self.cid)["messages"]
+        self.assertEqual(saved[2]["role"], "system")
+        self.assertEqual(saved[2]["content"], "重建的项目约定")
+        # 下一轮构造请求时仍然带着它（位置不变）。
+        again = self.manager.build_messages(self.store.get(self.cid), "system")
+        self.assertEqual(again[2]["content"], "重建的项目约定")
+
+    def test_agent_persists_injection_before_user_and_keeps_it_next_turn(self):
+        """注入块落盘为历史消息：首轮插在 user 之前，第二轮仍在原位，不再逐轮重发。"""
+        local = types.ModuleType("local")
+        local.ToolExecutor = object
+        sys.modules["local"] = local
+        agent = module("test_model.AgentLoop", ROOT / "model/AgentLoop.py")
+
+        class Provider:
+            config = types.SimpleNamespace(context_window=8000, max_tokens=256, model="test")
+
+            def __init__(self):
+                self.requests = []
+
+            def stream_chat(self, messages, **kwargs):
+                self.requests.append([dict(message) for message in messages])
+                yield {"type": "content", "delta": "好"}
+                yield {"type": "usage", "usage": {"prompt_tokens": 100, "completion_tokens": 1}}
+                yield {"type": "finish", "finish_reason": "stop"}
+
+            def cancel(self):
+                pass
+
+        provider = Provider()
+        executor = type("E", (), {"list_tools_llm_format": lambda self: []})()
+        loop = agent.AgentLoop(provider, executor, self.store)
+        sources = {"project_conventions": "约定A", "custom_instructions": "回答简洁"}
+        log = io.StringIO()
+
+        with contextlib.redirect_stdout(log):
+            list(loop.stream_send(self.cid, "第一问", system_prompt="system", injection_sources=sources))
+            list(loop.stream_send(self.cid, "第二问", system_prompt="system", injection_sources=sources))
+
+        turn1, turn2 = provider.requests[0], provider.requests[1]
+        self.assertEqual([message["role"] for message in turn1], ["system", "system", "system", "user"])
+        self.assertIn("约定A", turn1[1]["content"])
+        self.assertIn("回答简洁", turn1[2]["content"])
+        self.assertEqual([message["role"] for message in turn2], ["system", "system", "system", "user", "assistant", "user"])
+        self.assertEqual(turn2[:4], turn1, "第二轮必须逐字节复用首轮前缀")
+        # 每轮输出一条缓存观测：round / raw / cached / 请求前缀字符数。
+        self.assertEqual(log.getvalue().count("[LocalCache]"), 2)
+        self.assertIn("raw_input=100", log.getvalue())
+        self.assertIn("cached_input=0", log.getvalue())
+        self.assertIn("request_chars=", log.getvalue())
+
+    def test_agent_inserts_changed_convention_before_the_new_user_turn(self):
+        """约定变更时追加 diff 块，位置在新 user 之前，已有内容不再重发。"""
+        local = types.ModuleType("local")
+        local.ToolExecutor = object
+        sys.modules["local"] = local
+        agent = module("test_model.AgentLoop", ROOT / "model/AgentLoop.py")
+
+        class Provider:
+            config = types.SimpleNamespace(context_window=8000, max_tokens=256, model="test")
+
+            def __init__(self):
+                self.requests = []
+
+            def stream_chat(self, messages, **kwargs):
+                self.requests.append([dict(message) for message in messages])
+                yield {"type": "content", "delta": "好"}
+                yield {"type": "usage", "usage": {"prompt_tokens": 100, "completion_tokens": 1}}
+                yield {"type": "finish", "finish_reason": "stop"}
+
+            def cancel(self):
+                pass
+
+        provider = Provider()
+        executor = type("E", (), {"list_tools_llm_format": lambda self: []})()
+        loop = agent.AgentLoop(provider, executor, self.store)
+        first = {"project_conventions": "约定A"}
+        second = {"project_conventions": "约定A\n约定B"}
+        list(loop.stream_send(self.cid, "第一问", system_prompt="system", injection_sources=first))
+        list(loop.stream_send(self.cid, "第二问", system_prompt="system", injection_sources=second))
+
+        turn2 = provider.requests[1]
+        self.assertEqual([message["role"] for message in turn2], ["system", "system", "user", "assistant", "system", "user"])
+        self.assertIn("约定A", turn2[1]["content"])
+        self.assertIn("+ 约定B", turn2[4]["content"])
+        self.assertNotIn("约定B", turn2[1]["content"])
 
 
 if __name__ == "__main__":
