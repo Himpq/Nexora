@@ -666,6 +666,35 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(fully_cached["effective_input"], 0)
         self.assertEqual(fully_cached["total"], 5030)
 
+    def test_creation_only_usage_is_not_a_cache_hit(self):
+        """只返回 created cache input 时命中量必须为 0，写入量全部计费。"""
+        extract = self.provider_module._extract_usage_io
+
+        creation_only = extract({"input_tokens": 120, "output_tokens": 30,
+                                 "cache_creation_input_tokens": 1000})
+        self.assertEqual(creation_only["raw_input"], 1120)
+        self.assertEqual(creation_only["cached_input"], 0)
+        self.assertEqual(creation_only["cached_tokens_source"], "")
+        self.assertEqual(creation_only["effective_input"], 1120)
+        self.assertEqual(creation_only["uncached_input"], 1120)
+        self.assertEqual(creation_only["total"], 1150)
+
+        # 部分网关用 created_cache_tokens 命名写入量（与云端 Papi 别名一致）。
+        created_alias = extract({"input_tokens": 120, "output_tokens": 30,
+                                 "created_cache_tokens": 1000})
+        self.assertEqual(created_alias["raw_input"], 1120)
+        self.assertEqual(created_alias["cached_input"], 0)
+        self.assertEqual(created_alias["cached_tokens_source"], "")
+        self.assertEqual(created_alias["effective_input"], 1120)
+
+        # prompt_tokens 已含缓存时，写入量只用于标注未缓存计费，不改变原始输入。
+        prompt_style = extract({"prompt_tokens": 1000, "completion_tokens": 50,
+                                "created_cache_tokens": 900})
+        self.assertEqual(prompt_style["raw_input"], 1000)
+        self.assertEqual(prompt_style["cached_input"], 0)
+        self.assertEqual(prompt_style["effective_input"], 1000)
+        self.assertEqual(prompt_style["uncached_input"], 900)
+
     def test_missing_total_tokens_falls_back_to_raw_input_plus_output(self):
         """不返回 total_tokens 的厂商按「原始输入 + 输出」补齐合计。"""
         io = self.provider_module._extract_usage_io(

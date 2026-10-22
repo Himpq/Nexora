@@ -409,8 +409,10 @@ def _extract_uncached_tokens(u: dict) -> int:
         ("top", u.get("prompt_cache_miss_tokens")),
         ("top", u.get("cache_creation_input_tokens")),
         ("top", u.get("cache_write_input_tokens")),
+        ("top", u.get("created_cache_tokens")),
         ("input_details", input_details.get("cache_creation_input_tokens")),
         ("input_details", input_details.get("cache_write_input_tokens")),
+        ("input_details", input_details.get("created_cache_tokens")),
     )
 
     for _, value in candidates:
@@ -429,7 +431,7 @@ def _extract_uncached_tokens(u: dict) -> int:
 
 
 def _extract_cache_creation_tokens(u: dict) -> int:
-    """提取缓存写入量（Anthropic cache_creation / 兼容网关 cache_write）。
+    """提取缓存写入量（Anthropic cache_creation / 兼容网关 cache_write / created_cache_tokens）。
 
     写入量是新增计费，不是命中；单独取出来用于还原 Anthropic 的原始输入总量。
     """
@@ -438,8 +440,10 @@ def _extract_cache_creation_tokens(u: dict) -> int:
     candidates = (
         u.get("cache_creation_input_tokens"),
         u.get("cache_write_input_tokens"),
+        u.get("created_cache_tokens"),
         input_details.get("cache_creation_input_tokens"),
         input_details.get("cache_write_input_tokens"),
+        input_details.get("created_cache_tokens"),
     )
 
     for value in candidates:
@@ -501,7 +505,10 @@ def _extract_usage_io(raw_usage_obj) -> dict:
     if anthropic_style:
         raw_input = input_tokens + cached + cache_creation
         uncached = input_tokens + cache_creation
-        cached_source = cached_source or "cache_read_input_tokens"
+
+        # 只有确实读到缓存时才标记命中来源；仅写入（creation）不是命中。
+        if cached > 0 and not cached_source:
+            cached_source = "cache_read_input_tokens"
 
     completion_details = u.get("completion_tokens_details") if isinstance(u.get("completion_tokens_details"), dict) else {}
     output_details = u.get("output_tokens_details") if isinstance(u.get("output_tokens_details"), dict) else {}
