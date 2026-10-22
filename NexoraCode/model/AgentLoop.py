@@ -705,6 +705,18 @@ class AgentLoop:
             last_round_io = self._accumulate_usage(round_usage, totals)
 
             if last_round_io:
+                # 每次模型调用的缓存命中观测：raw/cached 来自上游 usage，
+                # request_chars 是本轮实际发送的消息前缀字符数，便于对照命中率。
+                request_chars = len(json.dumps(messages, ensure_ascii=False, default=str))
+                print(
+                    f"[LocalCache] conversation={conversation_id} round={round_index} "
+                    f"raw_input={int(last_round_io.get('raw_input') or 0)} "
+                    f"cached_input={int(last_round_io.get('cached_input') or 0)} "
+                    f"effective_input={int(last_round_io.get('effective_input') or 0)} "
+                    f"output={int(last_round_io.get('output') or 0)} "
+                    f"request_chars={request_chars} messages={len(messages)} tools={len(tools)} "
+                    f"cached_source={str(last_round_io.get('cached_tokens_source') or '-')}"
+                )
                 self.store.record_context_usage(conversation_id, int(last_round_io.get("raw_input") or 0),
                                                len(messages), input_estimate)
             last_round_had_tool_calls = bool(grouped_tool_calls)
