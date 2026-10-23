@@ -20,7 +20,7 @@ from typing import Any, Generator, Optional
 
 from core.config import config
 from local import ToolExecutor
-from .Provider import ProviderClient, ProviderConfig, _extract_usage_io
+from .Provider import ProviderClient, ProviderConfig, _extract_usage_io, describe_usage
 from .ConversationStore import ConversationStore, is_placeholder_title
 from .ContextManager import ContextManager
 from .RetrySettings import DEFAULT_EMPTY_RESPONSE_RETRY_COUNT, configured_retry_count
@@ -715,7 +715,8 @@ class AgentLoop:
                     f"effective_input={int(last_round_io.get('effective_input') or 0)} "
                     f"output={int(last_round_io.get('output') or 0)} "
                     f"request_chars={request_chars} messages={len(messages)} tools={len(tools)} "
-                    f"cached_source={str(last_round_io.get('cached_tokens_source') or '-')}"
+                    f"cached_source={str(last_round_io.get('cached_tokens_source') or '-')} "
+                    f"raw_usage={describe_usage(round_usage)}"
                 )
                 self.store.record_context_usage(conversation_id, int(last_round_io.get("raw_input") or 0),
                                                len(messages), input_estimate)

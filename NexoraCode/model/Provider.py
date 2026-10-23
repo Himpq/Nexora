@@ -435,6 +435,7 @@ def _extract_cache_creation_tokens(u: dict) -> int:
 
     写入量是新增计费，不是命中；单独取出来用于还原 Anthropic 的原始输入总量。
     """
+
     input_details = u.get("input_tokens_details") if isinstance(u.get("input_tokens_details"), dict) else {}
 
     candidates = (
@@ -459,6 +460,42 @@ def _extract_cache_creation_tokens(u: dict) -> int:
             return number
 
     return 0
+
+
+def describe_usage(raw_usage_obj, max_chars: int = 800) -> str:
+    """把原始 usage 压成一行，供 [LocalCache] 日志核对厂商字段口径。
+
+    只保留标量字段与一层嵌套字典（prompt_tokens_details / input_tokens_details
+    等），未知字段也原样列出——学校 API 这类网关常把缓存字段藏在自定义键里，
+    只看归一化结果无法判断到底是读缓存还是写缓存。
+    """
+
+    if not isinstance(raw_usage_obj, dict) or not raw_usage_obj:
+        return "-"
+
+    parts = []
+
+    for key in sorted(raw_usage_obj):
+        value = raw_usage_obj[key]
+
+        if isinstance(value, dict):
+            nested = ",".join(
+                f"{nested_key}={nested_value}"
+                for nested_key, nested_value in sorted(value.items())
+                if isinstance(nested_value, (int, float, bool, str))
+            )
+
+            if nested:
+                parts.append(f"{key}{{{nested}}}")
+        elif isinstance(value, (int, float, bool, str)):
+            parts.append(f"{key}={value}")
+
+    text = ",".join(parts)
+
+    if len(text) > max_chars:
+        text = text[:max_chars] + "..."
+
+    return text or "-"
 
 
 def _extract_usage_io(raw_usage_obj) -> dict:

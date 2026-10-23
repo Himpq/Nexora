@@ -703,6 +703,21 @@ class ContextTests(unittest.TestCase):
         )
         self.assertEqual(io["total"], 1050)
 
+    def test_describe_usage_keeps_unknown_cache_fields(self):
+        """原始 usage 诊断行必须保留自定义字段，才能核对厂商口径。"""
+        text = self.provider_module.describe_usage({
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "prompt_tokens_details": {"cached_tokens": 80, "created_cache_tokens": 10},
+            "vendor_cache_read_tokens": 70,
+            "ignored": None,
+        })
+        self.assertIn("prompt_tokens=100", text)
+        self.assertIn("prompt_tokens_details{cached_tokens=80,created_cache_tokens=10}", text)
+        self.assertIn("vendor_cache_read_tokens=70", text)
+        self.assertNotIn("ignored", text)
+        self.assertEqual(self.provider_module.describe_usage({}), "-")
+
     def test_invalid_context_budget_error_names_the_model(self):
         self.provider.config.context_window = 0
         self.add("user", "hello")
@@ -1020,6 +1035,8 @@ class ContextTests(unittest.TestCase):
         self.assertIn("raw_input=100", log.getvalue())
         self.assertIn("cached_input=0", log.getvalue())
         self.assertIn("request_chars=", log.getvalue())
+        self.assertIn("raw_usage=", log.getvalue())
+        self.assertIn("prompt_tokens=100", log.getvalue())
 
     def test_agent_inserts_changed_convention_before_the_new_user_turn(self):
         """约定变更时追加 diff 块，位置在新 user 之前，已有内容不再重发。"""
