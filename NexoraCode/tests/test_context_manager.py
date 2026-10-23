@@ -695,6 +695,24 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(prompt_style["effective_input"], 1000)
         self.assertEqual(prompt_style["uncached_input"], 900)
 
+    def test_prompt_details_creation_is_counted_as_uncached_not_hit(self):
+        """学校 API 形态：prompt_tokens_details 同时给读缓存和 created_cache_tokens。"""
+        io = self.provider_module._extract_usage_io({
+            "prompt_tokens": 105189,
+            "completion_tokens": 2755,
+            "total_tokens": 107944,
+            "prompt_tokens_details": {
+                "cached_tokens": 101696,
+                "created_cache_tokens": 3456,
+            },
+        })
+        self.assertEqual(io["raw_input"], 105189)
+        self.assertEqual(io["cached_input"], 101696)
+        self.assertEqual(io["cached_tokens_source"], "prompt_tokens_details.cached_tokens")
+        self.assertEqual(io["effective_input"], 3493)
+        self.assertEqual(io["uncached_input"], 3456)
+        self.assertEqual(io["total"], 107944)
+
     def test_missing_total_tokens_falls_back_to_raw_input_plus_output(self):
         """不返回 total_tokens 的厂商按「原始输入 + 输出」补齐合计。"""
         io = self.provider_module._extract_usage_io(

@@ -402,14 +402,20 @@ def _extract_cache_miss_tokens(u: dict) -> int:
 
 
 def _extract_uncached_tokens(u: dict) -> int:
-    """提取缓存未命中（新增计费）token，DeepSeek / Anthropic 风格字段。"""
+    """提取缓存未命中（新增计费）token，DeepSeek / Anthropic / 网关风格字段。"""
+    prompt_details = u.get("prompt_tokens_details") if isinstance(u.get("prompt_tokens_details"), dict) else {}
     input_details = u.get("input_tokens_details") if isinstance(u.get("input_tokens_details"), dict) else {}
 
     candidates = (
         ("top", u.get("prompt_cache_miss_tokens")),
+        ("prompt_details", prompt_details.get("prompt_cache_miss_tokens")),
+        ("prompt_details", prompt_details.get("cache_miss_input_tokens")),
         ("top", u.get("cache_creation_input_tokens")),
         ("top", u.get("cache_write_input_tokens")),
         ("top", u.get("created_cache_tokens")),
+        ("prompt_details", prompt_details.get("cache_creation_input_tokens")),
+        ("prompt_details", prompt_details.get("cache_write_input_tokens")),
+        ("prompt_details", prompt_details.get("created_cache_tokens")),
         ("input_details", input_details.get("cache_creation_input_tokens")),
         ("input_details", input_details.get("cache_write_input_tokens")),
         ("input_details", input_details.get("created_cache_tokens")),
@@ -436,12 +442,16 @@ def _extract_cache_creation_tokens(u: dict) -> int:
     写入量是新增计费，不是命中；单独取出来用于还原 Anthropic 的原始输入总量。
     """
 
+    prompt_details = u.get("prompt_tokens_details") if isinstance(u.get("prompt_tokens_details"), dict) else {}
     input_details = u.get("input_tokens_details") if isinstance(u.get("input_tokens_details"), dict) else {}
 
     candidates = (
         u.get("cache_creation_input_tokens"),
         u.get("cache_write_input_tokens"),
         u.get("created_cache_tokens"),
+        prompt_details.get("cache_creation_input_tokens"),
+        prompt_details.get("cache_write_input_tokens"),
+        prompt_details.get("created_cache_tokens"),
         input_details.get("cache_creation_input_tokens"),
         input_details.get("cache_write_input_tokens"),
         input_details.get("created_cache_tokens"),
