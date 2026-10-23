@@ -10,6 +10,7 @@ from App.Core.context_window import (
     MODEL_CONTEXT_WINDOW_KEYS,
     _parse_model_context_window_for_save,
 )
+from basis.Config import filter_archived_models
 from basis.TokenUsage.billing import normalize_model_pricing
 
 
@@ -211,5 +212,55 @@ def admin_delete_model(target_model_id=None):
             "success": True,
             "message": f"模型 {model_id} 已归档，计费信息已保留",
         })
+    except Exception as error:
+        return jsonify({"success": False, "message": str(error)})
+
+
+@model_admin_bp.route("/api/admin/models/providers/<path:target_provider>", methods=["DELETE"])
+@model_admin_bp.route("/api/admin/models/provider/delete", methods=["POST"])
+@require_admin
+def admin_delete_provider(target_provider=None):
+    """删除 Provider，需要输入确认文本。
+
+    引用检查只统计在用模型：归档模型（status=archived）已从模型列表隐藏，
+    但仍保留在 models.json 中供历史计费读取，不能阻止 Provider 删除。
+    """
+    if _load_models_config is None or _save_models_config is None:
+        raise RuntimeError("model admin routes are not configured")
+
+    data = request.get_json(silent=True) or {}
+    provider = (target_provider or data.get("provider") or "").strip()
+    confirm_text = data.get("confirm_text")
+
+    if not provider:
+        return jsonify({"success": False, "message": "provider 不能为空"}), 400
+
+    if confirm_text != "确认修改":
+        return jsonify({"success": False, "message": "确认文本错误"}), 400
+
+    try:
+        config = _load_models_config()
+        providers = config.setdefault("providers", {})
+        models = config.setdefault("models", {})
+
+        if provider not in providers:
+            return jsonify({"success": False, "message": "Provider 不存在"}), 404
+
+        used_by = [
+            model_id
+            for model_id, model_info in filter_archived_models(models).items()
+            if isinstance(model_info, dict) and model_info.get("provider") == provider
+        ]
+
+        if used_by:
+            return jsonify({
+                "success": False,
+                "message": f'Provider 正在被模型引用: {", ".join(used_by[:6])}'
+            }), 400
+
+        del providers[provider]
+        _save_models_config(config, sync_source="admin_provider_delete")
+
+        return jsonify({"success": True, "message": f"Provider {provider} 已删除"})
     except Exception as error:
         return jsonify({"success": False, "message": str(error)})

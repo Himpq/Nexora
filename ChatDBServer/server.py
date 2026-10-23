@@ -6815,42 +6815,6 @@ def admin_upsert_provider(target_provider=None):
         return jsonify({'success': False, 'message': str(e)})
 
 
-@app.route('/api/admin/models/providers/<path:target_provider>', methods=['DELETE'])
-@app.route('/api/admin/models/provider/delete', methods=['POST'])
-@require_admin
-def admin_delete_provider(target_provider=None):
-    """删除 Provider，需要输入确认文本"""
-    data = request.get_json(silent=True) or {}
-    provider = (target_provider or data.get('provider') or '').strip()
-    confirm_text = data.get('confirm_text')
-
-    if not provider:
-        return jsonify({'success': False, 'message': 'provider 不能为空'}), 400
-    if confirm_text != '确认修改':
-        return jsonify({'success': False, 'message': '确认文本错误'}), 400
-
-    try:
-        cfg = load_models_config()
-        providers = cfg.setdefault('providers', {})
-        models = cfg.setdefault('models', {})
-
-        if provider not in providers:
-            return jsonify({'success': False, 'message': 'Provider 不存在'}), 404
-
-        used_by = [mid for mid, minfo in models.items() if isinstance(minfo, dict) and minfo.get('provider') == provider]
-        if used_by:
-            return jsonify({
-                'success': False,
-                'message': f'Provider 正在被模型引用: {", ".join(used_by[:6])}'
-            }), 400
-
-        del providers[provider]
-        save_models_config(cfg, sync_source='admin_provider_delete')
-        return jsonify({'success': True, 'message': f'Provider {provider} 已删除'})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
-
-
 def _iter_sse_from_runtime_stream(stream_id: str, username: str, from_seq: int = 0):
     try:
         safe_from_seq = int(from_seq or 0)
