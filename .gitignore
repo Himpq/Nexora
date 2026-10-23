@@ -77,6 +77,7 @@ NexoraSearch/storage
 .npm-cache/
 
 ChatDBServer/static/new/
+ChatDBServer/static/introduce/
 NexoraCode/ui/static/nexoracode/
 
 # 端到端验证产物：构建日志与 Playwright 截图
