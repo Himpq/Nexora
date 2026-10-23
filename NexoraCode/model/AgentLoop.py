@@ -23,6 +23,7 @@ from local import ToolExecutor
 from .Provider import ProviderClient, ProviderConfig, _extract_usage_io, describe_usage
 from .ConversationStore import ConversationStore, is_placeholder_title
 from .ContextManager import ContextManager
+from .TokenEstimator import TokenEstimator
 from .RetrySettings import DEFAULT_EMPTY_RESPONSE_RETRY_COUNT, configured_retry_count
 from .TitleGenerator import maybe_generate_title
 from .ToolPermissionPolicy import (
@@ -423,6 +424,8 @@ class AgentLoop:
         }
         request_first_round_chars = 0
         context_window = self._context_window()
+        # 首轮 system/tools 占用统计（首次模型调用时计算，落盘与事件共用同一份）。
+        prompt_profile: dict | None = None
 
         # 本次请求的 badge timing：落盘进消息 metadata，重进对话后前端可从快照恢复。
         # providerMs 为跨全部工具轮次的「净模型生成时长」累计（不含工具执行/权限审批/
@@ -476,6 +479,7 @@ class AgentLoop:
                                 context_injection=injection_diag,
                                 context_compression=compression_step,
                                 auto_retries=auto_retries,
+                                prompt_profile=prompt_profile,
                             ),
                             "timestamp": _now(),
                         },
@@ -570,6 +574,20 @@ class AgentLoop:
             request_max_tokens = self.context_manager.request_output_limit(
                 conversation_id, messages, tools
             )
+
+            # 首轮统计 system/tools 占用并推给前端：ring panel 的 System Instructions /
+            # Tool Definitions 两行只能由本地计数得到，provider usage 拆不开。
+            # 只在首轮算一次，后续工具轮复用同一份 profile（前缀未变，值不会变）。
+            if prompt_profile is None:
+                prompt_profile = self._measure_prompt_profile(messages, tools)
+                yield {
+                    "type": "prompt_token_profile",
+                    "system_tokens": prompt_profile["system_tokens"],
+                    "system_tokens_est": prompt_profile["system_tokens"],
+                    "tools_tokens": prompt_profile["tools_tokens"],
+                    "tools_tokens_est": prompt_profile["tools_tokens"],
+                    "tokenization_exact": True,
+                }
 
             if request_first_round_chars <= 0:
                 try:
@@ -679,6 +697,7 @@ class AgentLoop:
                                 context_injection=injection_diag,
                                 context_compression=compression_step,
                                 auto_retries=auto_retries,
+                                prompt_profile=prompt_profile,
                             ),
                             "timestamp": _now(),
                         },
@@ -820,6 +839,7 @@ class AgentLoop:
                             context_injection=injection_diag,
                             context_compression=compression_step,
                             auto_retries=auto_retries,
+                            prompt_profile=prompt_profile,
                         ),
                         "timestamp": _now(),
                     },
@@ -854,6 +874,7 @@ class AgentLoop:
                     context_injection=injection_diag,
                     context_compression=compression_step,
                     auto_retries=auto_retries,
+                    prompt_profile=prompt_profile,
                 ),
             }
             self.store.append_message(conversation_id, assistant_message)
@@ -1202,6 +1223,28 @@ class AgentLoop:
             "cost": float(io.get("cost") or 0.0),
         }
 
+    @staticmethod
+    def _measure_prompt_profile(messages: list[dict], tools: list[dict]) -> dict:
+        """统计首轮请求里 system 与 tools 各占多少 token。
+
+        ring panel 需要把窗口占用拆成 System Instructions / Tool Definitions /
+        User Messages 三段。provider 只上报总 input，拆不开，因此这里用本地
+        tiktoken 计数：system 取请求里全部 system 消息（head + 注入块），
+        tools 取工具定义的序列化文本。两者都是精确计数，不是字符估算。
+        """
+        system_texts = [
+            str(message.get("content") or "")
+            for message in messages
+            if isinstance(message, dict) and str(message.get("role") or "").strip() == "system"
+        ]
+        system_tokens = TokenEstimator.count("\n\n".join(system_texts)) if system_texts else 0
+        tools_tokens = TokenEstimator.count(tools) if tools else 0
+
+        return {
+            "system_tokens": int(max(0, system_tokens)),
+            "tools_tokens": int(max(0, tools_tokens)),
+        }
+
     def _build_message_metadata(
         self,
         model_name: str,
@@ -1216,6 +1259,7 @@ class AgentLoop:
         context_injection: dict | None = None,
         context_compression: dict | None = None,
         auto_retries: list | None = None,
+        prompt_profile: dict | None = None,
     ) -> dict:
         """构建 assistant 消息 metadata（口径与 SSE token_usage 对齐，避免流式/落盘切换跳变）：
         - io_tokens / io_tokens_window: 本轮窗口口径（provider prompt_tokens 即该轮完整上下文）
@@ -1293,9 +1337,14 @@ class AgentLoop:
             metadata["io_tokens"] = self._io_tokens_dict(last_round_io)
             metadata["io_tokens_window"] = dict(metadata["io_tokens"])
             metadata["io_tokens_cumulative"] = self._io_tokens_dict(totals)
+            profile = prompt_profile if isinstance(prompt_profile, dict) else {}
             metadata["request_debug"] = {
                 "context_window_limit": max(0, int(context_window or 0)),
                 "first_round_input_chars": max(0, int(first_round_chars or 0)),
+                # ring panel 拆分窗口占用用：provider 只给总 input，system/tools 由本地精确计数。
+                "first_round_system_tokens": max(0, int(profile.get("system_tokens") or 0)),
+                "first_round_tools_tokens": max(0, int(profile.get("tools_tokens") or 0)),
+                "first_round_tokenization_exact": True,
             }
 
         return metadata
